@@ -13,6 +13,7 @@ DEFAULT_GAMES = 1000
 DEFAULT_PROFILE = "balanced"
 DEFAULT_CLASS = "warrior"
 PROGRESS_EVERY = 10  # обновлять строку прогресса каждые N партий
+MAX_FLOOR_STEPS = 200  # защита от бесконечного цикла на этаже
 
 # Плеер
 MAX_POINTS = 200  # максимум точек на графике HP

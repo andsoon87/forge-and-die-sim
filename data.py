@@ -88,6 +88,16 @@ class TileType(IntEnum):
     CAMP = 5
     TRADER = 6    
 
+TILE_TYPE_NAMES = {
+    TileType.START: "Старт",
+    TileType.FORGE: "Кузница",
+    TileType.MONSTER: "Монстр",
+    TileType.TREASURE: "Сокровищница",
+    TileType.EVENT: "Событие",
+    TileType.CAMP: "Лагерь",
+    TileType.TRADER: "Торговец",
+}
+
 # ============================================================
 # ТАЙЛЫ (61 карта)
 # ============================================================
@@ -176,6 +186,11 @@ TILES = [
 class Action(IntEnum):
     SKIP = 0
     FORGE = 1
+    
+ACTION_NAMES = {
+    Action.SKIP: "Пропуск",
+    Action.FORGE: "Переход на этаж",
+}    
 
 # ============================================================
 # Снаряжение (пока пусто)

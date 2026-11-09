@@ -1,0 +1,454 @@
+"""Просмотр прогона Forge & Die v2.0.
+
+Читает папку прогона (meta.json + game_*.json + stats.json),
+показывает сводку, таблицы, гистограммы и экспорт в TSV.
+
+Настройки (галочки TSV, последняя папка) сохраняются в
+~/.config/forge-and-die-sim/run_viewer.json.
+"""
+
+import glob
+import json
+import os
+import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+import config
+import data
+
+
+# ============================================================
+# Настройки (сохранение между запусками)
+# ============================================================
+
+SETTINGS_DIR = os.path.join(os.path.expanduser("~"), ".config", "forge-and-die-sim")
+SETTINGS_FILE = os.path.join(SETTINGS_DIR, "run_viewer.json")
+
+DEFAULT_SETTINGS = {
+    "last_run_dir": "",
+    "tsv_cols": {
+        "summary": True,
+        "final_floor": True,
+        "deaths": True,
+        "averages": True,
+        "hist_steps": False,
+    },
+}
+
+
+def load_settings() -> dict:
+    if not os.path.isfile(SETTINGS_FILE):
+        return dict(DEFAULT_SETTINGS)
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            s = json.load(f)
+        # добиваем недостающие ключи
+        for k, v in DEFAULT_SETTINGS.items():
+            s.setdefault(k, v)
+        for k, v in DEFAULT_SETTINGS["tsv_cols"].items():
+            s["tsv_cols"].setdefault(k, v)
+        return s
+    except Exception:
+        return dict(DEFAULT_SETTINGS)
+
+
+def save_settings(settings: dict) -> None:
+    os.makedirs(SETTINGS_DIR, exist_ok=True)
+    # преобразуем BooleanVar → bool
+    to_save = {
+        "last_run_dir": settings.get("last_run_dir", ""),
+        "tsv_cols": {
+            k: (v.get() if isinstance(v, tk.BooleanVar) else bool(v))
+            for k, v in settings.get("tsv_cols", {}).items()
+        },
+    }
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(to_save, f, ensure_ascii=False, indent=2)
+
+
+# ============================================================
+# Загрузка прогона
+# ============================================================
+
+def load_run(run_dir: str) -> dict:
+    meta_path = os.path.join(run_dir, "meta.json")
+    stats_path = os.path.join(run_dir, "stats.json")
+    games = []
+
+    if os.path.isfile(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    else:
+        meta = {}
+
+    if os.path.isfile(stats_path):
+        with open(stats_path, "r", encoding="utf-8") as f:
+            stats = json.load(f)
+    else:
+        stats = {}
+
+    for path in sorted(glob.glob(os.path.join(run_dir, "game_*.json"))):
+        with open(path, "r", encoding="utf-8") as f:
+            games.append(json.load(f))
+
+    return {"meta": meta, "stats": stats, "games": games}
+
+
+# ============================================================
+# Подсчёт статистики
+# ============================================================
+
+def compute_stats(run: dict) -> dict:
+    games = run["games"]
+    n = len(games)
+
+    final_floor_counts = {}
+    deaths_by_floor = {}
+    steps_list = []
+    final_levels = []
+    final_hp = []
+    final_gold = []
+    final_xp = []
+
+    for g in games:
+        ff = g.get("final_floor", 0)
+        final_floor_counts[ff] = final_floor_counts.get(ff, 0) + 1
+        steps_list.append(len(g.get("steps", [])))
+
+        # смерти (пока поля нет — 0)
+        d = g.get("deaths_by_floor", {})
+        for floor, cnt in d.items():
+            deaths_by_floor[floor] = deaths_by_floor.get(floor, 0) + cnt
+
+        # последний шаг
+        if g.get("steps"):
+            last = g["steps"][-1]
+            party = last.get("party", [])
+            if party:
+                final_levels.append(party[0]["level"])
+                final_hp.append(sum(b["hp"] for b in party))
+                final_gold.append(sum(b["gold"] for b in party))
+                final_xp.append(sum(b["xp"] for b in party))
+
+    def avg(lst):
+        return sum(lst) / len(lst) if lst else 0.0
+
+    return {
+        "games_total": n,
+        "reached_floor_4": run["stats"].get("reached_floor_4", 0),
+        "stuck": run["stats"].get("stuck", 0),
+        "deaths_total": sum(deaths_by_floor.values()),
+        "final_floor_counts": final_floor_counts,
+        "deaths_by_floor": deaths_by_floor,
+        "avg_steps": avg(steps_list),
+        "avg_final_level": avg(final_levels),
+        "avg_final_hp": avg(final_hp),
+        "avg_final_gold": avg(final_gold),
+        "avg_final_xp": avg(final_xp),
+        "steps_list": steps_list,
+        "final_floor_list": [g.get("final_floor", 0) for g in games],
+    }
+
+
+# ============================================================
+# Приложение
+# ============================================================
+
+class RunViewerApp:
+    def __init__(self, root: tk.Tk, run_dir: str, settings: dict):
+        self.root = root
+        self.run_dir = run_dir
+        self.settings = settings
+        self.run = None
+        self.stats = None
+
+        self.root.title(f"Forge & Die — Run Viewer — {os.path.basename(run_dir.rstrip('/'))}")
+        self.root.geometry("1000x800")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        self.create_widgets()
+        self.load_and_show()
+
+    # --------------------------------------------------------
+    def create_widgets(self):
+        top = tk.Frame(self.root)
+        top.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+        tk.Label(top, text="Прогон:").pack(side=tk.LEFT)
+        self.run_label = tk.Label(top, text=self.run_dir, anchor="w")
+        self.run_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        tk.Button(top, text="Выбрать…", command=self.choose_run).pack(side=tk.LEFT)
+        tk.Button(top, text="Обновить", command=self.load_and_show).pack(side=tk.LEFT, padx=2)
+
+        # Сводка
+        summary_frame = tk.Frame(self.root)
+        summary_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        self.summary_text = tk.Text(summary_frame, height=10, wrap=tk.WORD, font=("Courier", 10))
+        self.summary_text.pack(fill=tk.X)
+
+        # Таблицы
+        tables_frame = tk.Frame(self.root)
+        tables_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.final_floor_text = tk.Text(tables_frame, height=6, width=30, font=("Courier", 10))
+        self.final_floor_text.grid(row=0, column=0, sticky="nsew", padx=2)
+
+        self.deaths_text = tk.Text(tables_frame, height=6, width=30, font=("Courier", 10))
+        self.deaths_text.grid(row=0, column=1, sticky="nsew", padx=2)
+
+        self.averages_text = tk.Text(tables_frame, height=6, width=40, font=("Courier", 10))
+        self.averages_text.grid(row=0, column=2, sticky="nsew", padx=2)
+
+        tables_frame.columnconfigure(0, weight=1)
+        tables_frame.columnconfigure(1, weight=1)
+        tables_frame.columnconfigure(2, weight=1)
+
+        # Экспорт
+        export = tk.Frame(self.root)
+        export.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        tk.Button(export, text="Экспорт в TSV", command=self.export_tsv).pack(side=tk.LEFT)
+        tk.Label(export, text="  Таблицы:").pack(side=tk.LEFT)
+        for key, label in [
+            ("summary", "сводка"),
+            ("final_floor", "финальный этаж"),
+            ("deaths", "смерти"),
+            ("averages", "средние"),
+            ("hist_steps", "гистограмма шагов"),
+        ]:
+            var = tk.BooleanVar(value=self.settings["tsv_cols"].get(key, True))
+            self.settings["tsv_cols"][key] = var
+            tk.Checkbutton(export, text=label, variable=var).pack(side=tk.LEFT)
+
+        # Графики
+        plots_frame = tk.Frame(self.root)
+        plots_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.fig = Figure(figsize=(10, 4), dpi=100)
+        self.ax1 = self.fig.add_subplot(121)
+        self.ax2 = self.fig.add_subplot(122)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plots_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    # --------------------------------------------------------
+    def choose_run(self):
+        path = filedialog.askdirectory(
+            title="Выберите папку прогона",
+            initialdir=self.settings.get("last_run_dir") or (
+                config.LOGS_DIR if os.path.isdir(config.LOGS_DIR) else "."
+            ),
+        )
+        if not path:
+            return
+        self.run_dir = path
+        self.settings["last_run_dir"] = path
+        self.run_label.config(text=path)
+        self.load_and_show()
+
+    # --------------------------------------------------------
+    def load_and_show(self):
+        try:
+            self.run = load_run(self.run_dir)
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+            return
+        self.stats = compute_stats(self.run)
+        self.show_summary()
+        self.show_tables()
+        self.draw_plots()
+
+    # --------------------------------------------------------
+    def show_summary(self):
+        meta = self.run["meta"]
+        s = self.stats
+        lines = [
+            f"Прогон: {meta.get('run_id', '?')}",
+            f"Профиль: {meta.get('profile', '?')} | Класс: {meta.get('class', '?')} | Партий: {s['games_total']}",
+            f"Версия: {meta.get('project_version', '?')} | Начат: {meta.get('started_at', '?')} | Закончен: {meta.get('finished_at', '?')}",
+            "",
+            f"Дошли до 4-го этажа: {s['reached_floor_4']} ({self._pct(s['reached_floor_4'], s['games_total'])})",
+            f"Застряли: {s['stuck']} ({self._pct(s['stuck'], s['games_total'])})",
+            f"Погибли: {s['deaths_total']} ({self._pct(s['deaths_total'], s['games_total'])})",
+            "",
+            f"Среднее число шагов: {s['avg_steps']:.1f}",
+            f"Средний финальный уровень: {s['avg_final_level']:.2f}",
+            f"Среднее HP (сумма): {s['avg_final_hp']:.1f}",
+            f"Среднее золото (сумма): {s['avg_final_gold']:.1f}",
+            f"Среднее XP (сумма): {s['avg_final_xp']:.1f}",
+        ]
+        self.summary_text.delete("1.0", tk.END)
+        self.summary_text.insert(tk.END, "\n".join(lines))
+
+    # --------------------------------------------------------
+    def show_tables(self):
+        s = self.stats
+
+        # финальный этаж
+        self.final_floor_text.delete("1.0", tk.END)
+        self.final_floor_text.insert(tk.END, "Финальный этаж\n")
+        for f in sorted(s["final_floor_counts"]):
+            cnt = s["final_floor_counts"][f]
+            self.final_floor_text.insert(
+                tk.END, f"  {f + 1}: {cnt} ({self._pct(cnt, s['games_total'])})\n"
+            )
+
+        # смерти
+        self.deaths_text.delete("1.0", tk.END)
+        self.deaths_text.insert(tk.END, "Смерти по этажам\n")
+        if s["deaths_by_floor"]:
+            for f in sorted(s["deaths_by_floor"]):
+                cnt = s["deaths_by_floor"][f]
+                self.deaths_text.insert(tk.END, f"  {f + 1}: {cnt}\n")
+        else:
+            self.deaths_text.insert(tk.END, "  (пока нет данных)\n")
+
+        # средние
+        self.averages_text.delete("1.0", tk.END)
+        self.averages_text.insert(tk.END, "Средние показатели\n")
+        self.averages_text.insert(tk.END, f"  Уровень: {s['avg_final_level']:.2f}\n")
+        self.averages_text.insert(tk.END, f"  HP (сумма): {s['avg_final_hp']:.1f}\n")
+        self.averages_text.insert(tk.END, f"  Золото (сумма): {s['avg_final_gold']:.1f}\n")
+        self.averages_text.insert(tk.END, f"  XP (сумма): {s['avg_final_xp']:.1f}\n")
+
+    # --------------------------------------------------------
+    def draw_plots(self):
+        s = self.stats
+
+        # гистограмма финального этажа
+        self.ax1.clear()
+        floors = sorted(s["final_floor_counts"])
+        counts = [s["final_floor_counts"][f] for f in floors]
+        labels = [str(f + 1) for f in floors]
+        self.ax1.bar(labels, counts, color="tab:blue")
+        self.ax1.set_xlabel("Финальный этаж")
+        self.ax1.set_ylabel("Партий")
+        self.ax1.set_title("Распределение по финальному этажу")
+        self.ax1.grid(True, axis="y", alpha=0.3)
+
+        # гистограмма числа шагов
+        self.ax2.clear()
+        if s["steps_list"]:
+            self.ax2.hist(s["steps_list"], bins=30, color="tab:green", alpha=0.7)
+            self.ax2.set_xlabel("Шагов за партию")
+            self.ax2.set_ylabel("Партий")
+            self.ax2.set_title("Распределение длины партии")
+            self.ax2.grid(True, axis="y", alpha=0.3)
+
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+    # --------------------------------------------------------
+    def export_tsv(self):
+        if not self.stats:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".tsv",
+            filetypes=[("TSV", "*.tsv"), ("All files", "*.*")],
+            initialfile=os.path.basename(self.run_dir.rstrip("/")) + ".tsv",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                self._write_tsv(f)
+            messagebox.showinfo("Экспорт", f"Сохранено: {path}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+
+    def _write_tsv(self, f):
+        cols = self.settings["tsv_cols"]
+        s = self.stats
+
+        if cols["summary"].get():
+            f.write("# Сводка\n")
+            f.write("key\tvalue\n")
+            f.write(f"run_id\t{self.run['meta'].get('run_id', '?')}\n")
+            f.write(f"games_total\t{s['games_total']}\n")
+            f.write(f"reached_floor_4\t{s['reached_floor_4']}\n")
+            f.write(f"stuck\t{s['stuck']}\n")
+            f.write(f"deaths_total\t{s['deaths_total']}\n")
+            f.write(f"avg_steps\t{s['avg_steps']:.2f}\n")
+            f.write(f"avg_final_level\t{s['avg_final_level']:.2f}\n")
+            f.write(f"avg_final_hp\t{s['avg_final_hp']:.2f}\n")
+            f.write(f"avg_final_gold\t{s['avg_final_gold']:.2f}\n")
+            f.write(f"avg_final_xp\t{s['avg_final_xp']:.2f}\n")
+            f.write("\n")
+
+        if cols["final_floor"].get():
+            f.write("# Финальный этаж\n")
+            f.write("floor\tgames\tpercent\n")
+            for fl in sorted(s["final_floor_counts"]):
+                cnt = s["final_floor_counts"][fl]
+                f.write(f"{fl + 1}\t{cnt}\t{self._pct(cnt, s['games_total'])}\n")
+            f.write("\n")
+
+        if cols["deaths"].get():
+            f.write("# Смерти по этажам\n")
+            f.write("floor\tdeaths\n")
+            if s["deaths_by_floor"]:
+                for fl in sorted(s["deaths_by_floor"]):
+                    f.write(f"{fl + 1}\t{s['deaths_by_floor'][fl]}\n")
+            f.write("\n")
+
+        if cols["averages"].get():
+            f.write("# Средние показатели\n")
+            f.write("metric\tvalue\n")
+            f.write(f"avg_final_level\t{s['avg_final_level']:.2f}\n")
+            f.write(f"avg_final_hp\t{s['avg_final_hp']:.2f}\n")
+            f.write(f"avg_final_gold\t{s['avg_final_gold']:.2f}\n")
+            f.write(f"avg_final_xp\t{s['avg_final_xp']:.2f}\n")
+            f.write("\n")
+
+        if cols["hist_steps"].get():
+            f.write("# Длина партии (шаги)\n")
+            f.write("step\n")
+            for v in s["steps_list"]:
+                f.write(f"{v}\n")
+            f.write("\n")
+
+    # --------------------------------------------------------
+    @staticmethod
+    def _pct(part, total):
+        return f"{(part / total * 100):.1f}%" if total else "0.0%"
+
+    def on_close(self):
+        save_settings(self.settings)
+        self.root.destroy()
+
+
+# ============================================================
+# main
+# ============================================================
+
+def main():
+    settings = load_settings()
+
+    run_dir = None
+    if len(sys.argv) > 1:
+        run_dir = sys.argv[1]
+    if not run_dir:
+        root = tk.Tk()
+        root.withdraw()
+        run_dir = filedialog.askdirectory(
+            title="Выберите папку прогона",
+            initialdir=settings.get("last_run_dir") or (
+                config.LOGS_DIR if os.path.isdir(config.LOGS_DIR) else "."
+            ),
+        )
+        root.destroy()
+    if not run_dir:
+        return
+
+    settings["last_run_dir"] = run_dir
+    root = tk.Tk()
+    app = RunViewerApp(root, run_dir, settings)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

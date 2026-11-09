@@ -2,9 +2,11 @@
 
 # Версия проекта (см. README.md, раздел «Версионирование»)
 PROJECT_VERSION = "0.1.0"
+DEFAULT_SEED = None  # None = случайный; число = фиксированный
 
-# Пути
-LOGS_DIR = "logs"
+# Путь сохранения логов
+import os
+LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 # Симуляция
 DEFAULT_GAMES = 1000

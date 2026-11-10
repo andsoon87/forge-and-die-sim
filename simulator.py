@@ -142,7 +142,7 @@ def step_back(floor_state: dict) -> dict:
 # Разрешение тайла (варианты действий)
 # ============================================================
 
-def resolve_tile(floor_state: dict, party: list, log: dict) -> list:
+def resolve_tile(floor_state: dict, party: list) -> list:
     """Возвращает список доступных Action на текущем тайле.
 
     Не принимает решение — только предлагает варианты.
@@ -202,7 +202,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             break  # колода пуста
 
         # 3. варианты действий на тайле
-        available = resolve_tile(floor_state, party, log)
+        available = resolve_tile(floor_state, party)
 
         # 4. выбор бота
         action = bot_decide(available, party, floor_state, profile)

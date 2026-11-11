@@ -2,7 +2,7 @@
 import os
 
 # Версия проекта (см. README.md, раздел «Версионирование»)
-PROJECT_VERSION = "0.1.0"
+PROJECT_VERSION = "0.2.0"
 DEFAULT_SEED = None  # None = случайный; число = фиксированный
 
 # Путь сохранения логов
@@ -14,6 +14,7 @@ DEFAULT_PROFILE = "rusher"
 DEFAULT_CLASS = "warrior"
 PROGRESS_EVERY = 10  # обновлять строку прогресса каждые N партий
 MAX_FLOOR_STEPS = 200  # защита от бесконечного цикла на этаже
+MAX_COMBAT_STEPS = 100  # защита от бесконечного цикла в бою
 
 # Плеер
 MAX_POINTS = 200  # максимум точек на графике HP

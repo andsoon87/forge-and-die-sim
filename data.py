@@ -149,77 +149,77 @@ TILE_TYPE_NAMES = {
 #   revival — True: при каждом повторном входе d6: 1 - монстры возрождаются
 TILES = [
     # 00–04
-    {"type": TileType.START,    "monster_formula": None, "in_deck": False},  # 00S
-    {"type": TileType.FORGE,    "monster_formula": None, "in_deck": True},   # 01F
-    {"type": TileType.FORGE,    "monster_formula": None, "in_deck": True},   # 02F
-    {"type": TileType.FORGE,    "monster_formula": None, "in_deck": True},   # 03F
-    {"type": TileType.FORGE,    "monster_formula": None, "in_deck": True},   # 04F
+    {"type": TileType.START,    "monster_formula": None},  # 00S
+    {"type": TileType.FORGE,    "monster_formula": None},   # 01F
+    {"type": TileType.FORGE,    "monster_formula": None},   # 02F
+    {"type": TileType.FORGE,    "monster_formula": None},   # 03F
+    {"type": TileType.FORGE,    "monster_formula": None},   # 04F
 
     # 05–08: лагеря
-    {"type": TileType.CAMP,     "monster_formula": None, "in_deck": True},   # 05A
-    {"type": TileType.CAMP,     "monster_formula": None, "in_deck": True},   # 06A
-    {"type": TileType.CAMP,     "monster_formula": None, "in_deck": True},   # 07A
-    {"type": TileType.CAMP,     "monster_formula": None, "in_deck": True},   # 08A
+    {"type": TileType.CAMP,     "monster_formula": None},   # 05A
+    {"type": TileType.CAMP,     "monster_formula": None},   # 06A
+    {"type": TileType.CAMP,     "monster_formula": None},   # 07A
+    {"type": TileType.CAMP,     "monster_formula": None},   # 08A
 
     # 09–12: торговцы
-    {"type": TileType.TRADER,   "monster_formula": None, "in_deck": True},   # 09T
-    {"type": TileType.TRADER,   "monster_formula": None, "in_deck": True},   # 10T
-    {"type": TileType.TRADER,   "monster_formula": None, "in_deck": True},   # 11T
-    {"type": TileType.TRADER,   "monster_formula": None, "in_deck": True},   # 12T
+    {"type": TileType.TRADER,   "monster_formula": None},   # 09T
+    {"type": TileType.TRADER,   "monster_formula": None},   # 10T
+    {"type": TileType.TRADER,   "monster_formula": None},   # 11T
+    {"type": TileType.TRADER,   "monster_formula": None},   # 12T
 
     # 13–24: сокровищницы
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 13G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 14G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 15G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 16G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 17G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 18G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 19G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 20G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 21G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 22G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 23G
-    {"type": TileType.TREASURE, "monster_formula": None, "in_deck": True},   # 24G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 13G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 14G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 15G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 16G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 17G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 18G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 19G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 20G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 21G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 22G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 23G
+    {"type": TileType.TREASURE, "monster_formula": None},   # 24G
 
     # 25–48: монстры
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 25M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": True},  "in_deck": True},  # 26M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}, "in_deck": True},  # 27M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}, "in_deck": True},  # 28M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 29M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": True},  "in_deck": True},  # 30M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}, "in_deck": True},  # 31M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 32M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}, "in_deck": True},  # 33M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": True},  "in_deck": True},  # 34M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 35M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}, "in_deck": True},  # 36M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}, "in_deck": True},  # 37M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 38M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": True},  "in_deck": True},  # 39M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}, "in_deck": True},  # 40M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}, "in_deck": True},  # 41M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 42M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}, "in_deck": True},  # 43M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}, "in_deck": True},  # 44M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 45M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": True},  "in_deck": True},  # 46M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}, "in_deck": True},  # 47M
-    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}, "in_deck": True},  # 48M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 25M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": True}},  # 26M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}},  # 27M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}},  # 28M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 29M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": True}},  # 30M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}},  # 31M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 32M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}},  # 33M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": True}},  # 34M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 35M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}},  # 36M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}},  # 37M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 38M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": True}},  # 39M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}},  # 40M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}},  # 41M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 42M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": False}},  # 43M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}},  # 44M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 45M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 4, "revival": True}},  # 46M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 1, "revival": False}},  # 47M
+    {"type": TileType.MONSTER, "monster_formula": {"per": 2, "revival": False}},  # 48M
 
     # 49–60: события
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 49E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 50E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 51E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 52E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 53E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 54E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 55E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 56E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 57E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 58E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 59E
-    {"type": TileType.EVENT,    "monster_formula": None, "in_deck": True},   # 60E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 49E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 50E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 51E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 52E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 53E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 54E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 55E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 56E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 57E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 58E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 59E
+    {"type": TileType.EVENT,    "monster_formula": None},   # 60E
 ]
 # ============================================================
 # Список действий

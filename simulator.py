@@ -1,16 +1,22 @@
 """Симулятор Forge & Die v2.0 (каркас).
 
-Шаг 1: инициализация, ходьба по тайлам, кузница, переход на этаж.
-Без боя, событий, сокровищ, найма, снаряжения.
+Реализовано:
+- ходьба по линии тайлов, кузница, переход на этаж;
+- бой с монстрами (инициатива, атаки, смерть, XP, level-up);
+- побег из боя (Action.FLEE);
+- level-up в свободной фазе.
 
 Последовательность хода:
 1. Начало хода (бот стоит на клетке, куда пришёл в прошлом ходу).
-2. Свободная фаза (пока заглушка).
+2. Свободная фаза (level-up, позже — эликсиры, аура, чутьё, болезнь).
 3. Перемещение (step_forward).
 4. resolve_tile — список доступных Action.
 5. bot_decide — выбор одного Action.
 6. Обработка Action (переход на этаж / пропуск).
 7. Запись шага в лог.
+
+СОГЛАШЕНИЕ: структуры из data.py только читаются, не мутируются.
+Изменяемое состояние живёт в копиях тайлов внутри floor_state.
 """
 
 import argparse
@@ -72,16 +78,20 @@ def create_party(class_name: str) -> list:
 
 def create_floor_state(floor_index: int) -> dict:
     """Создаёт состояние этажа: линия тайлов, колода, позиция."""
+    start_tile = data.TILES[0].copy()
+    start_tile["id"] = 0
+    start_tile["visited"] = True  # старт уже посещён
+    
     tiles_deck = []
     for t in data.TILES:
-        if t["in_deck"]:
-            tile_copy = t.copy()
-            tile_copy["visited"] = False
-            tiles_deck.append(tile_copy)
+        if i == 0:
+            continue  # старт уже добавлен на поле
+        tile_copy = t.copy()
+        tile_copy["id"] = i
+        tile_copy["visited"] = False
+        tiles_deck.append(tile_copy)
+    
     random.shuffle(tiles_deck)
-
-    start_tile = data.TILES[0].copy()
-    start_tile["visited"] = True  # старт уже посещён
 
     return {
         "floor_index": floor_index,

@@ -1,7 +1,10 @@
-"""Просмотр прогона Forge & Die v2.0.
+"""Просмотр прогона Forge & Die II.
 
 Читает папку прогона (meta.json + game_*.json + stats.json),
 показывает сводку, таблицы, гистограммы и экспорт в TSV.
+
+Из таблицы можно открыть партию в game_player.py (двойной клик
+или контекстное меню).
 
 Настройки (галочки TSV, последняя папка) сохраняются в
 ~/.config/forge-and-die-sim/run_viewer.json.
@@ -10,9 +13,10 @@
 import glob
 import json
 import os
+import subprocess
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -22,11 +26,9 @@ from matplotlib.figure import Figure
 import config
 import data
 
-
 # ============================================================
 # Настройки (сохранение между запусками)
 # ============================================================
-
 SETTINGS_DIR = os.path.join(os.path.expanduser("~"), ".config", "forge-and-die-sim")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "run_viewer.json")
 
@@ -71,11 +73,9 @@ def save_settings(settings: dict) -> None:
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(to_save, f, ensure_ascii=False, indent=2)
 
-
 # ============================================================
 # Загрузка прогона
 # ============================================================
-
 def load_run(run_dir: str) -> dict:
     meta_path = os.path.join(run_dir, "meta.json")
     stats_path = os.path.join(run_dir, "stats.json")
@@ -95,15 +95,22 @@ def load_run(run_dir: str) -> dict:
 
     for path in sorted(glob.glob(os.path.join(run_dir, "game_*.json"))):
         with open(path, "r", encoding="utf-8") as f:
-            games.append(json.load(f))
+            game = json.load(f)
+        game["_path"] = path
+        # fallback: game_id из имени файла, если поля нет
+        if "game_id" not in game:
+            base = os.path.basename(path)
+            try:
+                game["game_id"] = int(base[len("game_"):-len(".json")])
+            except ValueError:
+                game["game_id"] = 0
+        games.append(game)
 
     return {"meta": meta, "stats": stats, "games": games}
-
 
 # ============================================================
 # Подсчёт статистики
 # ============================================================
-
 def compute_stats(run: dict) -> dict:
     games = run["games"]
     n = len(games)
@@ -111,6 +118,7 @@ def compute_stats(run: dict) -> dict:
     final_floor_counts = {}
     deaths_by_floor = {}
     steps_list = []
+    result_list = []
     final_levels = []
     final_hp = []
     final_gold = []
@@ -120,6 +128,7 @@ def compute_stats(run: dict) -> dict:
         ff = g.get("final_floor", 0)
         final_floor_counts[ff] = final_floor_counts.get(ff, 0) + 1
         steps_list.append(len(g.get("steps", [])))
+        result_list.append(g.get("result", "?"))
 
         # смерти (пока поля нет — 0)
         d = g.get("deaths_by_floor", {})
@@ -143,6 +152,7 @@ def compute_stats(run: dict) -> dict:
         "games_total": n,
         "reached_floor_4": run["stats"].get("reached_floor_4", 0),
         "stuck": run["stats"].get("stuck", 0),
+        "dead": run["stats"].get("dead", 0),
         "deaths_total": sum(deaths_by_floor.values()),
         "final_floor_counts": final_floor_counts,
         "deaths_by_floor": deaths_by_floor,
@@ -155,12 +165,10 @@ def compute_stats(run: dict) -> dict:
         "final_floor_list": [g.get("final_floor", 0) for g in games],
     }
 
-
 # ============================================================
 # Приложение
 # ============================================================
-
-class RunViewerApp:
+class RunPlayerApp:
     def __init__(self, root: tk.Tk, run_dir: str, settings: dict):
         self.root = root
         self.run_dir = run_dir
@@ -168,7 +176,7 @@ class RunViewerApp:
         self.run = None
         self.stats = None
 
-        self.root.title(f"Forge & Die — Run Viewer — {os.path.basename(run_dir.rstrip('/'))}")
+        self.root.title(f"Forge & Die II — Run Player -- {os.path.basename(run_dir.rstrip('/'))}")
         self.root.geometry("1000x800")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -192,22 +200,34 @@ class RunViewerApp:
         self.summary_text = tk.Text(summary_frame, height=10, wrap=tk.WORD, font=("Courier", 10))
         self.summary_text.pack(fill=tk.X)
 
-        # Таблицы
-        tables_frame = tk.Frame(self.root)
-        tables_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        self.final_floor_text = tk.Text(tables_frame, height=6, width=30, font=("Courier", 10))
-        self.final_floor_text.grid(row=0, column=0, sticky="nsew", padx=2)
-
-        self.deaths_text = tk.Text(tables_frame, height=6, width=30, font=("Courier", 10))
-        self.deaths_text.grid(row=0, column=1, sticky="nsew", padx=2)
-
-        self.averages_text = tk.Text(tables_frame, height=6, width=40, font=("Courier", 10))
-        self.averages_text.grid(row=0, column=2, sticky="nsew", padx=2)
-
-        tables_frame.columnconfigure(0, weight=1)
-        tables_frame.columnconfigure(1, weight=1)
-        tables_frame.columnconfigure(2, weight=1)
+        # Таблица партий
+        table_frame = tk.Frame(self.root)
+        table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        tk.Label(table_frame, text="Партии (двойной клик — открыть в game_player):", anchor="w").pack(side=tk.TOP, fill=tk.X)
+        
+        columns = ("game_id", "steps", "result")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=10)
+        self.tree.heading("game_id", text="game_id", command=lambda: self.sort_by("game_id"))
+        self.tree.heading("steps", text="steps", command=lambda: self.sort_by("steps"))
+        self.tree.heading("result", text="result", command=lambda: self.sort_by("result"))
+        self.tree.column("game_id", width=80, anchor="center")
+        self.tree.column("steps", width=80, anchor="center")
+        self.tree.column("result", width=160, anchor="center")
+        
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.LEFT, fill=tk.Y)
+        
+        self.tree.bind("<Double-1>", self.on_double_click)
+        self.tree.bind("<Button-3>", self.on_right_click)
+        
+        # Контекстное меню
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Открыть в плеере", command=self.open_selected_in_player)
+        self.context_menu.add_command(label="Открыть папку", command=self.open_selected_folder)
+        self.context_menu.add_command(label="Скопировать game_id", command=self.copy_selected_game_id)
 
         # Экспорт
         export = tk.Frame(self.root)
@@ -225,7 +245,7 @@ class RunViewerApp:
             self.settings["tsv_cols"][key] = var
             tk.Checkbutton(export, text=label, variable=var).pack(side=tk.LEFT)
 
-        # Графики
+        # Графики (две гистограммы)
         plots_frame = tk.Frame(self.root)
         plots_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -259,7 +279,7 @@ class RunViewerApp:
             return
         self.stats = compute_stats(self.run)
         self.show_summary()
-        self.show_tables()
+        self.fill_table()
         self.draw_plots()
 
     # --------------------------------------------------------
@@ -272,6 +292,7 @@ class RunViewerApp:
             f"Версия: {meta.get('project_version', '?')} | Начат: {meta.get('started_at', '?')} | Закончен: {meta.get('finished_at', '?')}",
             "",
             f"Дошли до 4-го этажа: {s['reached_floor_4']} ({self._pct(s['reached_floor_4'], s['games_total'])})",
+            f"Погибли: {s['dead']} ({self._pct(s['dead'], s['games_total'])})",
             f"Застряли: {s['stuck']} ({self._pct(s['stuck'], s['games_total'])})",
             f"Погибли: {s['deaths_total']} ({self._pct(s['deaths_total'], s['games_total'])})",
             "",
@@ -285,36 +306,97 @@ class RunViewerApp:
         self.summary_text.insert(tk.END, "\n".join(lines))
 
     # --------------------------------------------------------
-    def show_tables(self):
-        s = self.stats
+    def fill_table(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for g in self.run["games"]:
+            self.tree.insert("", "end", values=(
+                g.get("game_id", 0),
+                len(g.get("steps", [])),
+                g.get("result", "?"),
+            ))
 
-        # финальный этаж
-        self.final_floor_text.delete("1.0", tk.END)
-        self.final_floor_text.insert(tk.END, "Финальный этаж\n")
-        for f in sorted(s["final_floor_counts"]):
-            cnt = s["final_floor_counts"][f]
-            self.final_floor_text.insert(
-                tk.END, f"  {f + 1}: {cnt} ({self._pct(cnt, s['games_total'])})\n"
-            )
-
-        # смерти
-        self.deaths_text.delete("1.0", tk.END)
-        self.deaths_text.insert(tk.END, "Смерти по этажам\n")
-        if s["deaths_by_floor"]:
-            for f in sorted(s["deaths_by_floor"]):
-                cnt = s["deaths_by_floor"][f]
-                self.deaths_text.insert(tk.END, f"  {f + 1}: {cnt}\n")
-        else:
-            self.deaths_text.insert(tk.END, "  (пока нет данных)\n")
-
-        # средние
-        self.averages_text.delete("1.0", tk.END)
-        self.averages_text.insert(tk.END, "Средние показатели\n")
-        self.averages_text.insert(tk.END, f"  Уровень: {s['avg_final_level']:.2f}\n")
-        self.averages_text.insert(tk.END, f"  HP (сумма): {s['avg_final_hp']:.1f}\n")
-        self.averages_text.insert(tk.END, f"  Золото (сумма): {s['avg_final_gold']:.1f}\n")
-        self.averages_text.insert(tk.END, f"  XP (сумма): {s['avg_final_xp']:.1f}\n")
-
+    # --------------------------------------------------------
+    def sort_by(self, key: str):
+        """Сортировка таблицы по клику на заголовок."""
+        games = self.run["games"]
+        if key == "game_id":
+            games.sort(key=lambda g: g.get("game_id", 0))
+        elif key == "steps":
+            games.sort(key=lambda g: len(g.get("steps", [])))
+        elif key == "result":
+            games.sort(key=lambda g: g.get("result", ""))
+        self.fill_table()
+        
+    # --------------------------------------------------------
+    def _selected_game(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        values = self.tree.item(sel[0], "values")
+        if not values:
+            return None
+        try:
+            game_id = int(values[0])
+        except ValueError:
+            return None
+        for g in self.run["games"]:
+            if g.get("game_id") == game_id:
+                return g
+        return None
+    
+    # --------------------------------------------------------
+    def on_double_click(self, event):
+        self.open_selected_in_player()
+    
+    # --------------------------------------------------------
+    def on_right_click(self, event):
+        row = self.tree.identify_row(event.y)
+        if row:
+            self.tree.selection_set(row)
+            self.context_menu.post(event.x_root, event.y_root)
+    
+    # --------------------------------------------------------
+    def open_selected_in_player(self):
+        g = self._selected_game()
+        if not g:
+            return
+        path = g.get("_path")
+        if not path:
+            messagebox.showerror("Ошибка", "Не найден путь к логу партии")
+            return
+        game_player_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_player.py")
+        try:
+            subprocess.Popen([sys.executable, game_player_path, path])
+        except Exception as e:
+            messagebox.showerror("Ошибка запуска", str(e))   
+    
+    # --------------------------------------------------------
+    def open_selected_folder(self):
+        g = self._selected_game()
+        if not g:
+            return
+        path = g.get("_path")
+        if not path:
+            return
+        folder = os.path.dirname(path)
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+    # --------------------------------------------------------
+    def copy_selected_game_id(self):
+        g = self._selected_game()
+        if not g:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(str(g.get("game_id", "")))
+    
     # --------------------------------------------------------
     def draw_plots(self):
         s = self.stats
@@ -370,6 +452,7 @@ class RunViewerApp:
             f.write(f"run_id\t{self.run['meta'].get('run_id', '?')}\n")
             f.write(f"games_total\t{s['games_total']}\n")
             f.write(f"reached_floor_4\t{s['reached_floor_4']}\n")
+            f.write(f"dead\t{s['dead']}\n")
             f.write(f"stuck\t{s['stuck']}\n")
             f.write(f"deaths_total\t{s['deaths_total']}\n")
             f.write(f"avg_steps\t{s['avg_steps']:.2f}\n")
@@ -420,11 +503,9 @@ class RunViewerApp:
         save_settings(self.settings)
         self.root.destroy()
 
-
 # ============================================================
 # main
 # ============================================================
-
 def main():
     settings = load_settings()
 
@@ -446,9 +527,8 @@ def main():
 
     settings["last_run_dir"] = run_dir
     root = tk.Tk()
-    app = RunViewerApp(root, run_dir, settings)
+    app = RunPlayerApp(root, run_dir, settings)
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()

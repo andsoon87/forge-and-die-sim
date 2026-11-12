@@ -9,7 +9,7 @@ DEFAULT_SEED = None  # None = случайный; число = фиксиров�
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 # Симуляция
-DEFAULT_GAMES = 10
+DEFAULT_GAMES = 1000
 DEFAULT_PROFILE = "rusher"
 DEFAULT_CLASS = "warrior"
 PROGRESS_EVERY = 1  # обновлять строку прогресса каждые N партий

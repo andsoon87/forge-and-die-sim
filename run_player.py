@@ -7,7 +7,7 @@
 или контекстное меню).
 
 Настройки (галочки TSV, последняя папка) сохраняются в
-~/.config/forge-and-die-sim/run_viewer.json.
+~/.config/forge-and-die-sim/run_player.json.
 """
 
 import glob
@@ -30,14 +30,13 @@ import data
 # Настройки (сохранение между запусками)
 # ============================================================
 SETTINGS_DIR = os.path.join(os.path.expanduser("~"), ".config", "forge-and-die-sim")
-SETTINGS_FILE = os.path.join(SETTINGS_DIR, "run_viewer.json")
+SETTINGS_FILE = os.path.join(SETTINGS_DIR, "run_player.json")
 
 DEFAULT_SETTINGS = {
     "last_run_dir": "",
     "tsv_cols": {
         "summary": True,
         "final_floor": True,
-        "deaths": True,
         "averages": True,
         "hist_steps": False,
     },
@@ -116,7 +115,6 @@ def compute_stats(run: dict) -> dict:
     n = len(games)
 
     final_floor_counts = {}
-    deaths_by_floor = {}
     steps_list = []
     result_list = []
     final_levels = []
@@ -129,11 +127,6 @@ def compute_stats(run: dict) -> dict:
         final_floor_counts[ff] = final_floor_counts.get(ff, 0) + 1
         steps_list.append(len(g.get("steps", [])))
         result_list.append(g.get("result", "?"))
-
-        # смерти (пока поля нет — 0)
-        d = g.get("deaths_by_floor", {})
-        for floor, cnt in d.items():
-            deaths_by_floor[floor] = deaths_by_floor.get(floor, 0) + cnt
 
         # последний шаг
         if g.get("steps"):
@@ -150,12 +143,10 @@ def compute_stats(run: dict) -> dict:
 
     return {
         "games_total": n,
-        "reached_floor_4": run["stats"].get("reached_floor_4", 0),
+        "win": run["stats"].get("win", 0),
         "stuck": run["stats"].get("stuck", 0),
         "dead": run["stats"].get("dead", 0),
-        "deaths_total": sum(deaths_by_floor.values()),
         "final_floor_counts": final_floor_counts,
-        "deaths_by_floor": deaths_by_floor,
         "avg_steps": avg(steps_list),
         "avg_final_level": avg(final_levels),
         "avg_final_hp": avg(final_hp),
@@ -237,7 +228,6 @@ class RunPlayerApp:
         for key, label in [
             ("summary", "сводка"),
             ("final_floor", "финальный этаж"),
-            ("deaths", "смерти"),
             ("averages", "средние"),
             ("hist_steps", "гистограмма шагов"),
         ]:
@@ -291,10 +281,9 @@ class RunPlayerApp:
             f"Профиль: {meta.get('profile', '?')} | Класс: {meta.get('class', '?')} | Партий: {s['games_total']}",
             f"Версия: {meta.get('project_version', '?')} | Начат: {meta.get('started_at', '?')} | Закончен: {meta.get('finished_at', '?')}",
             "",
-            f"Дошли до 4-го этажа: {s['reached_floor_4']} ({self._pct(s['reached_floor_4'], s['games_total'])})",
+            f"Победа: {s['win']} ({self._pct(s['win'], s['games_total'])})",
             f"Погибли: {s['dead']} ({self._pct(s['dead'], s['games_total'])})",
             f"Застряли: {s['stuck']} ({self._pct(s['stuck'], s['games_total'])})",
-            f"Погибли: {s['deaths_total']} ({self._pct(s['deaths_total'], s['games_total'])})",
             "",
             f"Среднее число шагов: {s['avg_steps']:.1f}",
             f"Средний финальный уровень: {s['avg_final_level']:.2f}",
@@ -451,10 +440,9 @@ class RunPlayerApp:
             f.write("key\tvalue\n")
             f.write(f"run_id\t{self.run['meta'].get('run_id', '?')}\n")
             f.write(f"games_total\t{s['games_total']}\n")
-            f.write(f"reached_floor_4\t{s['reached_floor_4']}\n")
+            f.write(f"win\t{s['win']}\n")
             f.write(f"dead\t{s['dead']}\n")
             f.write(f"stuck\t{s['stuck']}\n")
-            f.write(f"deaths_total\t{s['deaths_total']}\n")
             f.write(f"avg_steps\t{s['avg_steps']:.2f}\n")
             f.write(f"avg_final_level\t{s['avg_final_level']:.2f}\n")
             f.write(f"avg_final_hp\t{s['avg_final_hp']:.2f}\n")
@@ -468,14 +456,6 @@ class RunPlayerApp:
             for fl in sorted(s["final_floor_counts"]):
                 cnt = s["final_floor_counts"][fl]
                 f.write(f"{fl + 1}\t{cnt}\t{self._pct(cnt, s['games_total'])}\n")
-            f.write("\n")
-
-        if cols["deaths"].get():
-            f.write("# Смерти по этажам\n")
-            f.write("floor\tdeaths\n")
-            if s["deaths_by_floor"]:
-                for fl in sorted(s["deaths_by_floor"]):
-                    f.write(f"{fl + 1}\t{s['deaths_by_floor'][fl]}\n")
             f.write("\n")
 
         if cols["averages"].get():

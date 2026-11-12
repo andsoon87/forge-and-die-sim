@@ -435,11 +435,22 @@ def bot_decide(available: list, party: list, floor_state: dict, profile: str, mo
     # по умолчанию -- первый вариант
     return random.choice(available)
 
+# ============================================================
+# Завершение партии
+# ============================================================
+def finalize_game(log: dict, game_world: list, floor_state: dict,
+                  floor_index: int, result: str) -> dict:
+    """Завершает партию: сохраняет текущий этаж в game_world,
+    проставляет final_floor и result, возвращает лог."""
+    game_world.append([t["id"] for t in floor_state["tiles"]])
+    log["game_world"] = game_world
+    log["final_floor"] = floor_index
+    log["result"] = result
+    return log
 
 # ============================================================
 # Главный цикл партии
 # ============================================================
-
 def play_one_game(class_name: str, profile: str, seed: int) -> dict:
     """Одна партия. Возвращает журнал."""
     random.seed(seed)
@@ -452,6 +463,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         "class": class_name,
         "steps": [],
     }
+    game_world = []
 
     step_num = 0
     while floor_index < 4:
@@ -511,9 +523,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             tile["visited"] = True
             if combat_log["result"] == "stuck":
                 # сигнал ошибки симуляции -- прерываем партию
-                log["final_floor"] = floor_index
-                log["result"] = "stuck"
-                return log
+                return finalize_game(log, game_world, floor_state, floor_index, "stuck")
             
         # 9. запись шага в лог
         log["steps"].append({
@@ -532,25 +542,23 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
 
         # 10. проверка смерти команды
         if not party:
-            log["final_floor"] = floor_index
-            log["result"] = "dead"
-            return log
+            return finalize_game(log, game_world, floor_state, floor_index, "dead")
 
         # 11. обработка перехода на следующий этаж
         if action == data.Action.FORGE:
             floor_index += 1
             if floor_index >= 4:
-                break
-            floor_state = create_floor_state(floor_index)
+                return finalize_game(log, game_world, floor_state, floor_index, "win")
+            else:
+                game_world.append([t["id"] for t in floor_state["tiles"]])
+                floor_state = create_floor_state(floor_index)
 
         # 12. защита от бесконечного цикла
         if floor_state["floor_steps"] > config.MAX_FLOOR_STEPS:
-            break
-
-    log["final_floor"] = floor_index
-    log["result"] = "reached_floor_4" if floor_index >= 4 else "stuck"
-    return log
-
+            return finalize_game(log, game_world, floor_state, floor_index, "stuck")
+    
+    # защита от не штатного выхода из цикла
+    return finalize_game(log, game_world, floor_state, floor_index, "stuck")
 
 # ============================================================
 # Прогон N партий
@@ -569,7 +577,7 @@ def print_progress(current: int, total: int, stats: dict, elapsed: float) -> Non
     pct = current / total * 100
     line = (
         f"[{current}/{total}] {pct:5.1f}% | "
-        f"reach4: {stats.get('reached_floor_4', 0)} | "
+        f"win: {stats.get('win', 0)} | "
         f"stuck: {stats.get('stuck', 0)} | "
         f"dead: {stats.get('dead', 0)} | "
         f"{elapsed:.1f}s"
@@ -625,7 +633,7 @@ def run_simulation(n_games: int, class_name: str, profile: str,
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
     print(f"Готово. Логи: {run_dir}")
-    print(f"Дошли до 4-го этажа: {stats.get('reached_floor_4', 0)} / {n_games}")
+    print(f"Победа: {stats.get('win', 0)} / {n_games}")
     print(f"Погибли: {stats.get('dead', 0)}")
     print(f"Застряли: {stats.get('stuck', 0)}")
 

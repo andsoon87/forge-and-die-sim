@@ -9,10 +9,10 @@ DEFAULT_SEED = None  # None = случайный; число = фиксиров�
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 # Симуляция
-DEFAULT_GAMES = 100
+DEFAULT_GAMES = 10
 DEFAULT_PROFILE = "rusher"
 DEFAULT_CLASS = "warrior"
-PROGRESS_EVERY = 10  # обновлять строку прогресса каждые N партий
+PROGRESS_EVERY = 1  # обновлять строку прогресса каждые N партий
 MAX_FLOOR_STEPS = 200  # защита от бесконечного цикла на этаже
 MAX_COMBAT_STEPS = 100  # защита от бесконечного цикла в бою
 

@@ -591,6 +591,8 @@ def run_simulation(n_games: int, class_name: str, profile: str,
     for i in range(n_games):
         seed = (seed_base + i) if seed_base is not None else None
         game_log = play_one_game(class_name, profile, seed)
+        game_log["game_id"] = i + 1
+        game_log["run_id"] = run_id
         result = game_log["result"]
         stats[result] = stats.get(result, 0) + 1
 

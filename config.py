@@ -1,4 +1,4 @@
-"""Конфигурация проекта Forge & Die Simulator."""
+"""Конфигурация проекта Forge & Die II Simulator."""
 import os
 
 # Версия проекта (см. README.md, раздел «Версионирование»)

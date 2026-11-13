@@ -1,4 +1,4 @@
-"""Симулятор Forge & Die v2.0 (каркас).
+"""Симулятор Forge & Die II.
 
 Реализовано:
 - ходьба по линии тайлов, кузница, переход на этаж;
@@ -208,6 +208,11 @@ def run_combat(party: list, monsters: list) -> dict:
 
     Возвращает combat_log:
     { "monsters": [{"pool": int, "monster": int}, ...],
+      "party": [{"class": "warrior", "level": 1,
+                 "at": 2, "df": 3, "max_hp": 17}],
+        "monsters": [
+            {"pool": m["pool"], "monster": m["monster"]} for m in monsters
+        ],
       "rounds": [{"round": int,
                   "hp_start_round": {"b": [hp...], "m": [hp...]},
                   "initiative": {"b": [roll_or_None...], "m": [roll_or_None...]},
@@ -220,6 +225,14 @@ def run_combat(party: list, monsters: list) -> dict:
       "result": "win"|"lose"|"stuck", "xp_gained": int, "gold_gained": int }
     """
     combat_log = {
+        "party": [
+            {"class": b["class"], "level": b["level"],
+             "at": b["at"], "df": b["df"], "max_hp": b["max_hp"]}
+            for b in party
+        ],
+        "monsters": [
+            {"pool": m["pool"], "monster": m["monster"]} for m in monsters
+        ],
         "monsters": [
             {"pool": m["pool"], "monster": m["monster"]} for m in monsters
         ],
@@ -292,6 +305,7 @@ def run_combat(party: list, monsters: list) -> dict:
                 roll = roll_d6()
                 dmg = max(0, roll + b["at"] - target["df"])
                 target["hp"] -= dmg
+                target["hp"] = max(0, target["hp"]) # клэмп hp
                 round_actions.append({
                     "type": "attack",
                     "actor": "b",
@@ -312,6 +326,7 @@ def run_combat(party: list, monsters: list) -> dict:
                 roll = roll_d6()
                 dmg = max(0, roll + m["at"] - target["df"])
                 target["hp"] -= dmg
+                target["hp"] = max(0, target["hp"]) # клэмп hp
                 round_actions.append({
                     "type": "attack",
                     "actor": "m",

@@ -207,6 +207,17 @@ class GamePlayerApp:
         self.map_canvas.bind("<Button-1>", self.on_map_click)
         self.map_canvas.bind("<Configure>", lambda e: self.draw_map())
 
+        # Легенда под картой: цветной квадратик + название типа тайла
+        legend_frame = tk.Frame(self.root)
+        legend_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
+        for tile_type, name in data.TILE_TYPE_NAMES.items():
+            color = TILE_TYPE_COLORS.get(tile_type, "#999999")
+            item = tk.Frame(legend_frame)
+            item.pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(item, bg=color, width=2, height=1,
+                     relief=tk.SOLID, borderwidth=1).pack(side=tk.LEFT)
+            tk.Label(item, text=name, anchor="w").pack(side=tk.LEFT, padx=(3, 0))
+
         # Средний блок: свойства (слева) + таблица шагов (справа)
         middle = tk.Frame(self.root)
         middle.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -402,6 +413,10 @@ class GamePlayerApp:
 
     def show_properties_tile(self, floor: int, pos: int):
         tile_id = self.game_world[floor][pos]
+        try:
+            name = data.TILES[tile_id]["name"]
+        except (IndexError, KeyError, TypeError):
+            name = "—"
         lines = [
             f"Тайл {tile_id}, этаж {floor + 1}, позиция {pos}",
             "",
@@ -409,7 +424,7 @@ class GamePlayerApp:
             f"этаж:     {floor + 1}",
             f"позиция:  {pos}",
             f"тип:      {tile_type_name(tile_id)}",
-            f"название: —",
+            f"название: {name}",
         ]
         self.props_text.delete("1.0", tk.END)
         self.props_text.insert(tk.END, "\n".join(lines))
@@ -424,8 +439,9 @@ class GamePlayerApp:
         if party:
             lines.append("Бойцы:")
             for b in party:
+                cls = data.CLASS_NAMES.get(b["class"], b["class"])
                 lines.append(
-                    f"  {b['class']} ур.{b['level']}, "
+                    f"  {cls} ур.{b['level']}, "
                     f"HP {b['hp']}/{b['max_hp']}, "
                     f"XP {b['xp']}, золото {b['gold']}"
                 )
@@ -437,10 +453,14 @@ class GamePlayerApp:
             lines.append("В начале хода:")
             for ev in free_events:
                 if ev.get("event") == "level_up":
+                    cls = data.CLASS_NAMES.get(ev["class"], ev["class"])
                     lines.append(
                         f"  новый уровень "
-                        f"({ev['class']} {ev['from_level']}→{ev['to_level']})"
+                        f"({cls} {ev['from_level']}→{ev['to_level']})"
                     )
+                elif ev.get("event") == "death":
+                    cls = data.CLASS_NAMES.get(ev["class"], ev["class"])
+                    lines.append(f"  погиб: {cls} ур.{ev['level']}")
                 else:
                     lines.append(f"  {ev}")
             lines.append("")
@@ -461,6 +481,25 @@ class GamePlayerApp:
             outcome = "побег" if flee_roll <= 3 else "неудача"
             lines.append(f"  попытка бегства: d6={flee_roll} ({outcome})")
 
+        camp = step.get("camp")
+        if camp:
+            cls = data.CLASS_NAMES.get(camp["class"], camp["class"])
+            present = camp.get("present")
+            attitude = camp.get("attitude")
+            lines.append("")
+            lines.append("Лагерь:")
+            lines.append(f"  класс: {cls}, уровень: {camp.get('level')}")
+            lines.append(f"  настрой: {attitude} (present={present})")
+            rolls = camp.get("rolls")
+            if rolls:
+                lines.append(
+                    f"  броски: present={rolls.get('present')}, "
+                    f"level={rolls.get('level')}, "
+                    f"attitude={rolls.get('attitude')}"
+                )
+            else:
+                lines.append("  броски: — (повторный визит)")
+
         combat = step.get("combat")
         if combat:
             rounds = len(combat.get("rounds", []))
@@ -474,14 +513,21 @@ class GamePlayerApp:
             if monsters:
                 names = []
                 for m in monsters:
-                    pool = m["pool"]
-                    monster = m["monster"]
-                    try:
-                        name = data.MONSTERS[pool][monster]["name"]
-                    except (IndexError, KeyError):
-                        name = "?"
-                    names.append(f"({pool + 1}.{monster + 1}) {name}")
-                lines.append(f"    монстры: {', '.join(names)}")
+                    t = m.get("type")
+                    if t == "monster":
+                        pool = m["pool"]
+                        monster = m["monster"]
+                        try:
+                            name = data.MONSTERS[pool][monster]["name"]
+                        except (IndexError, KeyError):
+                            name = "?"
+                        names.append(f"({pool + 1}.{monster + 1}) {name}")
+                    elif t == "camp":
+                        cls = data.CLASS_NAMES.get(m["class"], m["class"])
+                        names.append(f"{cls} ур.{m['level']}")
+                    else:
+                        names.append("?")
+                lines.append(f"    противники: {', '.join(names)}")
 
         self.props_text.delete("1.0", tk.END)
         self.props_text.insert(tk.END, "\n".join(lines))

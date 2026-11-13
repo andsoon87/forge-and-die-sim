@@ -51,12 +51,12 @@ def snapshot_boiets(boiets: dict) -> dict:
 # ============================================================
 # Инициализация
 # ============================================================
-def create_boiets(class_name: str) -> dict:
-    """Создаёт бойца 1-го уровня."""
-    level_data = data.CLASSES[class_name][0]  # индекс 0 -- уровень 1
+def create_boiets(class_name: str, level: int = 1) -> dict:
+    """Создаёт бойца указанного уровня (по умолчанию 1-го)."""
+    level_data = data.CLASSES[class_name][level - 1] # индекс 0 -- уровень 1
     return {
         "class": class_name,
-        "level": 1,
+        "level": level,
         "hp": level_data["hp"],
         "max_hp": level_data["hp"],
         "at": level_data["at"],
@@ -103,12 +103,36 @@ def create_floor_state(floor_index: int) -> dict:
 # ============================================================
 # Свободная фаза
 # ============================================================
+# Проверка на умерших в пати
+def cleanup_dead(party: list) -> tuple:
+    """Убирает из party бойцов с hp<=0. Возвращает (events, wiped).
+
+    wiped=True, если до чистки кто-то был, а после чистки party пуст
+    (вся команда погибла).
+    """
+    events = []
+    had_any = len(party) > 0
+    for b in party:
+        if b["hp"] <= 0:
+            events.append({
+                "event": "death",
+                "class": b["class"],
+                "level": b["level"],
+            })
+    party[:] = [b for b in party if b["hp"] > 0]
+    wiped = wiped = had_any and not party
+    return events, wiped
+
+# Проверка на повышение уровней
 def check_level_up(boiets: dict) -> list:
     """Проверяет и применяет level-up. Возвращает список событий для лога.
 
     XP тратится при получении уровня (списывается xp_cost следующего уровня).
     Уровень повышается, пока хватает XP и уровень < 7.
+    Мёртвых (hp<=0) не трогает -- страховка, обычно их уже убрал cleanup_dead.
     """
+    if boiets["hp"] <= 0:
+        return []
     events = []
     table = data.CLASSES[boiets["class"]]
     while boiets["level"] < len(table):
@@ -136,20 +160,27 @@ def check_level_up(boiets: dict) -> list:
         })
     return events
 
-
-def free_phase(party: list, floor_state: dict) -> list:
+# Свободная фаза
+def free_phase(party: list, floor_state: dict) -> tuple:
     """Свободная фаза в начале хода.
-    Сейчас: level-up всем живым бойцам.
+
+    1. Чистка party от трупов (hp<=0) -- смерти от боя, побега, болезней и т.п.
+       Если погибла вся команда -- возвращает (events, True) сразу, без level-up.
+    2. Level-up всем живым бойцам.
     Позже: эликсиры, «Святая аура», «Чутьё», болезнь.
     Возвращает список событий для лога.
     """
     events = []
+    dead_events, wiped = cleanup_dead(party)
+    events.extend(dead_events)
+    if wiped:
+        return events, True
     for b in party:
         events.extend(check_level_up(b))
-    return events
+    return events, False
 
 # ============================================================
-# Колода монстров и вытягивание
+# Колода монстров и вытягивание монстров и противников из лагерей
 # ============================================================
 def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
     """Тянет монстров по формуле тайла.
@@ -160,9 +191,9 @@ def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
     n_fighters -- число бойцов в команде (только живые: мёртвые из party удалены).
 
     Возвращает список боевых экземпляров:
-      {"pool": int, "monster": int,       # ссылка в data.MONSTERS
-       "hp": int,                          # текущее HP (мутабельное)
-       "max_hp": int, "at": int, "df": int, "xp": int, "gd": int}  # кэш из data
+      {"source": {"type": "monster", "pool": int, "monster": int},  # для лога/плеера
+       "hp": int,                                                   # текущее HP (мутабельное)
+       "max_hp": int, "at": int, "df": int, "xp": int, "gd": int}   # кэш из data
     """
     per = formula["per"]
     n_monsters = max(1, n_fighters // per)
@@ -186,8 +217,7 @@ def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
         monster_index = card["monster"]
         src = data.MONSTERS[pool_index][monster_index]
         monsters.append({
-            "pool": pool_index,
-            "monster": monster_index,
+            "source": {"type": "monster", "pool": pool_index, "monster": monster_index},
             "hp": src["hp"],
             "max_hp": src["hp"],
             "at": src["at"],
@@ -197,22 +227,43 @@ def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
         })
     return monsters
 
+def build_camp_monsters(class_name: str, level: int) -> list:
+    """Создаёт боевой экземпляр обитателя лагеря для run_combat.
+
+    Обитатель лагеря -- боец указанного класса и уровня. Статы берутся
+    из data.CLASSES (стартовое снаряжение появится позже и будет учтено
+    здесь же, в at/df/hp; source от этого не меняется).
+    Награда: XP = уровню, золото = 10.
+    """
+    src = data.CLASSES[class_name][level - 1]
+    return [{
+        "source": {"type": "camp", "class": class_name, "level": level},
+        "hp": src["hp"],
+        "max_hp": src["hp"],
+        "at": src["at"],
+        "df": src["df"],
+        "xp": level,
+        "gd": 10,
+    }]
+
+
 # ============================================================
 # Бой
 # ============================================================
 def run_combat(party: list, monsters: list) -> dict:
     """Проводит бой до победы или поражения команды.
 
-    party    -- список бойцов (живые и мёртвые; мёртвые остаются до конца боя).
-    monsters -- список боевых экземпляров из draw_monsters.
+    party    -- список бойцов (живые и мёртвые; мёртвые остаются до конца хода
+                               чистка трупов -- в free_phase следующего хода).
+    monsters -- список боевых экземпляров из draw_monsters или build_camp_monsters.
+                У каждого есть "source" для лога:
+                {"type": "monster", "pool", "monster"} или
+                {"type": "camp", "class", "level"}.
 
     Возвращает combat_log:
-    { "monsters": [{"pool": int, "monster": int}, ...],
-      "party": [{"class": "warrior", "level": 1,
+    { "party": [{"class": "warrior", "level": 1,
                  "at": 2, "df": 3, "max_hp": 17}],
-        "monsters": [
-            {"pool": m["pool"], "monster": m["monster"]} for m in monsters
-        ],
+      "monsters": [m["source"] for m in monsters],
       "rounds": [{"round": int,
                   "hp_start_round": {"b": [hp...], "m": [hp...]},
                   "initiative": {"b": [roll_or_None...], "m": [roll_or_None...]},
@@ -230,12 +281,7 @@ def run_combat(party: list, monsters: list) -> dict:
              "at": b["at"], "df": b["df"], "max_hp": b["max_hp"]}
             for b in party
         ],
-        "monsters": [
-            {"pool": m["pool"], "monster": m["monster"]} for m in monsters
-        ],
-        "monsters": [
-            {"pool": m["pool"], "monster": m["monster"]} for m in monsters
-        ],
+        "monsters": [m["source"] for m in monsters],
         "rounds": [],
         "result": None,
         "xp_gained": 0,
@@ -364,22 +410,98 @@ def run_combat(party: list, monsters: list) -> dict:
             combat_log["xp_gained"] = total_xp
             combat_log["gold_gained"] = total_gd
 
-    # 6. Чистка party от тел после боя (распределение снаряжения --
-    #    сюда же, когда появится снаряжение; сейчас распределять нечего).
-    party[:] = [b for b in party if b["hp"] > 0]
-
+    # 6. Чистка трупов -- в free_phase следующего хода (cleanup_dead).
+    #    Здесь party оставляем как есть: в шаге лога будут трупы с hp=0.
     return combat_log
 
 # ============================================================
 # Разрешение тайла (варианты действий)
 # ============================================================
+# Генерация лагеря: броски и варианты
+def _roll_camp(tile: dict, floor_state: dict, party: list) -> dict:
+    """Первый визит в лагерь: 3 броска (а,б,в) по §5 RULES.md.
 
+    (а) есть ли кто-то: d6 >= 4 -> кто-то есть.
+    (б) уровень обитателя: таблица §5 от этажа (только если present).
+    (в) настрой: таблица §5 от числа бойцов в команде (только если present).
+
+    Возвращает camp-словарь для tile["camp"].
+    """
+    floor_index = floor_state["floor_index"]
+    roll_present = roll_d6()
+    present = roll_present >= 4
+
+    level = None
+    attitude = None
+    roll_level = None
+    roll_attitude = None
+
+    if present:
+        # (б) уровень: таблица по этажу
+        roll_level = roll_d6()
+        level = data.CAMP_LEVEL_TABLE[roll_level - 1][floor_index]
+
+        # (в) настрой: таблица по числу бойцов
+        roll_attitude = roll_d6()
+        n = len(party)
+        if roll_attitude <= data.CAMP_ENEMY_MAX[n]:
+            attitude = "enemy"
+        elif roll_attitude <= data.CAMP_NEUTRAL_MAX[n]:
+            attitude = "neutral"
+        else:
+            attitude = "friend"
+
+    return {
+        "class": data.CAMP_CLASS[tile["id"]],
+        "present": present,
+        "level": level,
+        "attitude": attitude,
+        "rolls": {"present": roll_present, "level": roll_level, "attitude": roll_attitude},
+    }
+
+# Действия в лагере
+def _camp_available(camp: dict, party: list) -> list:
+    """Варианты действий в лагере по состоянию обитателя и составу party."""
+    if not camp["present"]:
+        return [data.Action.SKIP]
+    if camp["attitude"] == "neutral":
+        return [data.Action.SKIP]
+    if camp["attitude"] == "friend":
+        already = any(b["class"] == camp["class"] for b in party)
+        return [data.Action.SKIP] if already else [data.Action.HIRE, data.Action.SKIP]
+    if camp["attitude"] == "enemy":
+        return [data.Action.FIGHT, data.Action.FLEE]
+    # страховка
+    return [data.Action.SKIP]
+
+def _camp_snapshot(tile: dict) -> dict:
+    """Снимок лагеря для шага лога.
+
+    rolls -- всегда из первого визита (исторические броски этого лагеря);
+    при повторном визите rolls=None.
+    """
+    camp = tile.get("camp")
+    if camp is None:
+        return None
+    return {
+        "tile_id": tile["id"],
+        "class": camp["class"],
+        "present": camp["present"],
+        "level": camp["level"],
+        "attitude": camp["attitude"],
+        "rolls": camp.get("rolls"),
+    }
+
+# Разрешение тайла
 def resolve_tile(position: int, floor_state: dict, party: list) -> list:
     """Разрешает клетку position: при необходимости вытягивает тайл,
     возвращает список доступных Action.
 
     Не принимает решение -- только предлагает варианты.
-    position -- желаемая позиция (может быть len(tiles) -- шаг за правый край).
+
+    Лагерь: при первом визите делает 3 броска и пишет их в tile["camp"];
+    при present=False или attitude="neutral" сразу ставит visited=True
+    (исчерпан). Повторный визит -- те же броски из tile["camp"].
 
     Монстры:
       - visited == False                              → [FIGHT, FLEE]
@@ -410,8 +532,20 @@ def resolve_tile(position: int, floor_state: dict, party: list) -> list:
         if formula.get("revival") and roll_d6() == 1:
             return [data.Action.FIGHT, data.Action.FLEE]
         return [data.Action.SKIP]
+    #лагерь
+    if tile["type"] == data.TileType.CAMP:
+        if tile["visited"]:
+            return [data.Action.SKIP]
+        camp = tile.get("camp")
+        if camp is None:
+            camp = _roll_camp(tile, floor_state, party)
+            tile["camp"] = camp
+            # «Мёртвые» исходы: пусто или нейтрал -- лагерь исчерпан сразу.
+            if (not camp["present"]) or camp["attitude"] == "neutral":
+                tile["visited"] = True
+        return _camp_available(camp, party)
     
-    # сокровищница, событие, лагерь, торговец, старт -- пока только пропуск
+    # сокровищница, событие, торговец, старт -- пока только пропуск
     return [data.Action.SKIP]
 
 
@@ -456,17 +590,24 @@ def bot_move(floor_state: dict, party: list, profile: str) -> int:
 def bot_decide(available: list, party: list, floor_state: dict, profile: str, monsters: list) -> int:
     """Выбирает одно Action из списка доступных по профилю.
     available -- варианты на текущем тайле (len > 1; при len == 1 не вызывается).
-    monsters  -- монстры, вытянутые до решения (None, если боя нет).
+    monsters  -- противники, вытянутые до решения (None, если боя нет).
 
-    Rusher: FORGE > FIGHT > SKIP.
+    Rusher: HIRE > FORGE > FIGHT > SKIP > FLEE.
     Неизвестный профиль: случайное действие из доступных.
     """
     if profile == "rusher":
+        if data.Action.HIRE in available:
+            return data.Action.HIRE
         if data.Action.FORGE in available:
             return data.Action.FORGE
         if data.Action.FIGHT in available:
             return data.Action.FIGHT
-        return data.Action.SKIP
+        if data.Action.SKIP in available:
+            return data.Action.SKIP
+        if data.Action.FLEE in available:
+            return data.Action.FLEE
+        # страховка: не должно случаться, если available не пуст
+        return available[0]
 
     # по умолчанию -- первый вариант
     return random.choice(available)
@@ -503,8 +644,11 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
 
     step_num = 0
     while floor_index < 4:
-        # 1. свободная фаза
-        free_events = free_phase(party, floor_state)
+        # 1. свободная фаза (чистка трупов + level-up)
+        free_events, wiped = free_phase(party, floor_state)
+        if wiped:
+            # вся команда погибла -- партия окончена
+            return finalize_game(log, game_world, floor_state, floor_index, "dead")
 
         # 2. решение о направлении перемещения
         move = bot_move(floor_state, party, profile)
@@ -519,12 +663,17 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         tile = floor_state["tiles"][floor_state["position"]]
         action_position = floor_state["position"]  # позиция тайла действия
         
-        # 5. если возможен бой -- тянем монстров (бот их «видит»)
+        # 5. если возможен бой -- готовим противников
+        #    (бот их «видит»; kind определяется по типу тайла)
         monsters = None
         if data.Action.FIGHT in available:
-            monsters = draw_monsters(
-                floor_index, len(party), tile["monster_formula"]
-            )
+            if tile["type"] == data.TileType.CAMP:
+                camp = tile["camp"]
+                monsters = build_camp_monsters(camp["class"], camp["level"])
+            else:
+                monsters = draw_monsters(
+                    floor_index, len(party), tile["monster_formula"]
+                )
 
         # 6. выбор действия ботом
         if len(available) == 1:
@@ -537,7 +686,14 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         flee_roll = None
         fight = False
         
-        if action == data.Action.FIGHT:
+        if action == data.Action.HIRE:
+            # нанять обитателя лагеря (если класс ещё не в команде -- resolve_tile
+            # уже это проверила, здесь просто добавляем)
+            camp = tile["camp"]
+            new_b = create_boiets(camp["class"], camp["level"])
+            party.append(new_b)
+            tile["visited"] = True
+        elif action == data.Action.FIGHT:
             fight = True
         elif action == data.Action.FLEE:
             flee_roll = roll_d6()
@@ -546,8 +702,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
                 floor_state["position"] = max(0, floor_state["position"] - 1)
                 for b in party:
                     b["hp"] = max(0, b["hp"] - 1)
-                # смерть от −1 HP: чистка party от трупов
-                party[:] = [b for b in party if b["hp"] > 0]
+                # смерть от −1 HP: чистка трупов -- в free_phase следующего хода
                 combat_log = {"result": "flee"}
             else:
                 # побег не удался - начинаем бой
@@ -556,12 +711,16 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         # 8. единая точка вызова run_combat
         if fight:
             combat_log = run_combat(party, monsters)
-            tile["visited"] = True
+            if combat_log["result"] == "win":
+                tile["visited"] = True
             if combat_log["result"] == "stuck":
                 # сигнал ошибки симуляции -- прерываем партию
                 return finalize_game(log, game_world, floor_state, floor_index, "stuck")
             
         # 9. запись шага в лог
+        camp_snapshot = None
+        if tile["type"] == data.TileType.CAMP and tile.get("camp") is not None:
+            camp_snapshot = _camp_snapshot(tile)
         log["steps"].append({
             "step": step_num,
             "floor": floor_index,
@@ -572,15 +731,12 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             "free_events": free_events,
             "combat": combat_log,
             "flee_roll": flee_roll,
+            "camp": camp_snapshot,
             "party": [snapshot_boiets(b) for b in party],
         })
         step_num += 1
 
-        # 10. проверка смерти команды
-        if not party:
-            return finalize_game(log, game_world, floor_state, floor_index, "dead")
-
-        # 11. обработка перехода на следующий этаж
+        # 10. обработка перехода на следующий этаж
         if action == data.Action.FORGE:
             floor_index += 1
             if floor_index >= 4:
@@ -589,7 +745,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
                 game_world.append([t["id"] for t in floor_state["tiles"]])
                 floor_state = create_floor_state(floor_index)
 
-        # 12. защита от бесконечного цикла
+        # 11. защита от бесконечного цикла
         if floor_state["floor_steps"] > config.MAX_FLOOR_STEPS:
             return finalize_game(log, game_world, floor_state, floor_index, "stuck")
     

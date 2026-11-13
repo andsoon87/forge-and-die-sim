@@ -18,30 +18,46 @@ from tkinter import messagebox, ttk
 
 import data
 
-
 # ============================================================
 # Человекочитаемые имена
 # ============================================================
-def monster_name(pool: int, monster: int) -> str:
-    try:
-        return data.MONSTERS[pool][monster]["name"]
-    except (IndexError, KeyError):
-        return "?"
+def opponent_name(source: dict) -> str:
+    """Готовая строка противника по source: монстр или обитатель лагеря."""
+    t = source.get("type")
+    if t == "monster":
+        pool = source["pool"]
+        monster = source["monster"]
+        try:
+            name = data.MONSTERS[pool][monster]["name"]
+        except (IndexError, KeyError):
+            name = "?"
+        return f"({pool + 1}.{monster + 1}) {name}"
+    if t == "camp":
+        cls = data.CLASS_NAMES.get(source["class"], source["class"])
+        return f"{cls} ур.{source['level']}"
+    return "?"
 
-
-def monster_label(pool: int, monster: int) -> str:
-    return f"({pool + 1}.{monster + 1}) {monster_name(pool, monster)}"
-
+def opponent_stats(source: dict) -> dict:
+    """Базовые статы противника из data: at, df, hp."""
+    t = source.get("type")
+    if t == "monster":
+        return data.MONSTERS[source["pool"]][source["monster"]]
+    if t == "camp":
+        return data.CLASSES[source["class"]][source["level"] - 1]
+    return {"at": "?", "df": "?", "hp": "?"}
 
 def result_name(result: str) -> str:
     return {"win": "победа", "lose": "поражение",
             "stuck": "зависание"}.get(result, result)
 
-
-def class_name(class_key: str) -> str:
-    return {"warrior": "warrior", "hunter": "hunter",
-            "mage": "mage", "priest": "priest"}.get(class_key, class_key)
-
+def combat_title(monsters: list) -> str:
+    """Заголовок боя по типу противников (все одного типа)."""
+    types = {m.get("type") for m in monsters}
+    if types == {"monster"}:
+        return "Бой с монстрами"
+    if types == {"camp"}:
+        return "Бой с обитателем лагеря"
+    return "Бой"
 
 # ============================================================
 # Приложение
@@ -83,7 +99,8 @@ class CombatPlayerApp:
         res = result_name(self.combat.get("result", "?"))
         xp = self.combat.get("xp_gained", 0)
         gd = self.combat.get("gold_gained", 0)
-        line2 = f"Результат: {res}, XP +{xp}, золото +{gd}"
+        title = combat_title(self.monsters)
+        line2 = f"{title}. Результат: {res}, XP +{xp}, золото +{gd}"
         tk.Label(header, text=line2, font=("TkDefaultFont", 9),
                  anchor="w").pack(side=tk.TOP, fill=tk.X)
         
@@ -158,8 +175,9 @@ class CombatPlayerApp:
         for i, b in enumerate(self.party):
             hp = hp_b[i] if i < len(hp_b) else "?"
             init = init_b[i] if i < len(init_b) else None
+            cls = data.CLASS_NAMES.get(b["class"], b["class"])
             lines.append(
-                f"{class_name(b['class'])} ур.{b['level']}\n"
+                f"{cls} ур.{b['level']}\n"
                 f"  at: {b['at']}, df: {b['df']},\n"
                 f"  hp: {hp}/{b['max_hp']},"
             )
@@ -168,16 +186,14 @@ class CombatPlayerApp:
         self.party_text.delete("1.0", tk.END)
         self.party_text.insert(tk.END, "\n\n".join(lines) if lines else "—")
 
-        # Монстры
+        # Противники (монстры или обитатели лагерей)
         lines = []
-        for i, m in enumerate(self.monsters):
-            pool = m["pool"]
-            monster = m["monster"]
-            src = data.MONSTERS[pool][monster]
+        for i, src_entry in enumerate(self.monsters):
+            src = opponent_stats(src_entry)
             hp = hp_m[i] if i < len(hp_m) else "?"
             init = init_m[i] if i < len(init_m) else None
             lines.append(
-                f"{monster_label(pool, monster)}\n"
+                f"{opponent_name(src_entry)}\n"
                 f"  at: {src['at']}, df: {src['df']},\n"
                 f"  hp: {hp}/{src['hp']},"
             )
@@ -223,28 +239,25 @@ class CombatPlayerApp:
         if kind == "b":
             if idx < len(self.party):
                 b = self.party[idx]
-                return f"{class_name(b['class'])}"
+                return data.CLASS_NAMES.get(b["class"], b["class"])
             return f"боец {idx}"
         if idx < len(self.monsters):
-            m = self.monsters[idx]
-            return monster_label(m["pool"], m["monster"])
-        return f"монстр {idx}"
+            return opponent_name(self.monsters[idx])
+        return f"противник {idx}"
 
     def action_target_name(self, a: dict) -> str:
         idx = a.get("target_index", 0)
         if a.get("actor") == "b":
-            # боец бил монстра
+            # боец бил противника
             if idx < len(self.monsters):
-                m = self.monsters[idx]
-                return monster_label(m["pool"], m["monster"])
-            return f"монстр {idx}"
+                return opponent_name(self.monsters[idx])
+            return f"противник {idx}"
         else:
-            # монстр бил бойца
+            # противник бил бойца
             if idx < len(self.party):
                 b = self.party[idx]
-                return f"{class_name(b['class'])}"
+                return data.CLASS_NAMES.get(b["class"], b["class"])
             return f"боец {idx}"
-
 
 # ============================================================
 # main

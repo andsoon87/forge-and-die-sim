@@ -17,3 +17,62 @@
 
 ## Структура проекта
 
+| Файл | Назначение |
+|------|------------|
+| `RULES.md` | Правила игры (источник истины) |
+| `config.py` | Константы проекта (`PROJECT_VERSION`, лимиты, пути, дефолты) |
+| `data.py` | Игровые данные: классы, монстры, тайлы, действия, таблицы лагерей. **Только читается** |
+| `simulator.py` | Движок: ходьба, бой, найм, level-up, побег, запись лога партии |
+| `run_player.py` | Tkinter-обозреватель прогона: таблица партий, сводка, гистограммы, TSV |
+| `game_player.py` | Tkinter-плеер одной партии: карта этажей, таблица шагов, свойства, график |
+| `combat_player.py` | Tkinter-плеер одного боя: бойцы / раунды / противники, действия раунда |
+
+Запуск плееров: `run_player` → `game_player` (двойной клик по партии) → `combat_player` (кнопка «Открыть бой»).
+
+## Архитектура и соглашения
+
+**Версионирование.** Версия одна — `PROJECT_VERSION` в `config.py`. «Forge & Die II» — название игры. Версия правил отдельно не ведётся.
+
+**Индексация.** Везде 0-индексация: данные, логи, код. `+1` — только в UI при показе (этажи, позиции, id монстров).
+
+**`data.py` только читается.** Никакая мутация данных игры в `data.py` недопустима. Изменяемое состояние живёт в копиях:
+- тайлы этажа — в `floor_state["tiles"]` (копии из `data.TILES`);
+- бойцы — в `party`;
+- противники — в боевых экземплярах (`draw_monsters` / `build_camp_monsters`).
+
+**Логи — для плееров, не для чтения глазами.** В логах коды/ссылки (`tile_id`, `source` = `{type, pool, monster}` / `{type, class, level}`, `action` как int). Имена восстанавливаются из `data.py`. `combat_log` самодостаточен: не требует соседних шагов (в нём `party` на начало боя, `monsters`, `rounds` с `hp_start_round`/`initiative`/`actions`, финальный раунд-снимок, `result`, `xp_gained`/`gold_gained`).
+
+**`party` в шаге — после хода.** Трупы (`hp=0`) живут в `party` до начала следующего хода: чистка — в `free_phase` (`cleanup_dead`). «До боя» — из `combat_log["party"]` и `hp_start_round`; «до шага» — из предыдущего шага.
+
+**`resolve_tile` предлагает, `bot_*` решают.** `resolve_tile(position, floor_state, party) -> list[Action]` — только варианты. `bot_move` — направление, `bot_decide` — выбор `Action`. Не смешивать.
+
+**Последовательность хода:**
+1. `free_phase` — чистка трупов, level-up (позже: эликсиры, аура, чутьё, болезнь); если команда вымерла — `dead`.
+2. `bot_move` — 1 / -1.
+3. `resolve_tile` — тянет тайл при необходимости; для лагеря делает 3 броска и пишет в `tile["camp"]`.
+4. Смена позиции, `floor_steps += 1`.
+5. Если доступен `FIGHT` — `draw_monsters` или `build_camp_monsters`.
+6. `bot_decide` (если вариантов > 1).
+7. Обработка `Action` (`HIRE` / `FIGHT` / `FLEE` / `FORGE` / `SKIP`).
+8. Запись шага в лог.
+9. Переход на этаж (`FORGE`), `MAX_FLOOR_STEPS`.
+
+**`run_combat(party, monsters)`** — без `kind`. Противники — список боевых экземпляров с полем `source` (`{"type": "monster", ...}` / `{"type": "camp", ...}`), по нему плееры различают тип. Награда — `sum(m["xp"])`, `sum(m["gd"])`, делёж между выжившими. Чистка трупов — не здесь, а в `free_phase`.
+
+**Плееры** запускаются через `subprocess.Popen([sys.executable, <script>, ...])`, пути — через `os.path.dirname(os.path.abspath(__file__))`. Настройки — в `~/.config/forge-and-die-sim/<player>.json` (без дефолтов: нет файла — всё выключено).
+
+**TSV** — таб, `utf-8-sig`; галочки управляют и графиком, и TSV.
+
+## Запуск
+
+```bash
+# прогон N партий (seed для воспроизводимости)
+python simulator.py --games 1000 --seed 1
+
+# обозреватель прогона (без аргумента — откроет last_run_dir, если есть)
+python run_player.py
+
+# плеер партии / боя — обычно из run_player / game_player
+python game_player.py <log_path>
+python combat_player.py <log_path> <step_index>
+

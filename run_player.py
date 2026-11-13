@@ -493,6 +493,10 @@ def main():
     if len(sys.argv) > 1:
         run_dir = sys.argv[1]
     if not run_dir:
+        saved = settings.get("last_run_dir", "")
+        if saved and os.path.isdir(saved):
+            run_dir = saved
+    if not run_dir:
         root = tk.Tk()
         root.withdraw()
         run_dir = filedialog.askdirectory(

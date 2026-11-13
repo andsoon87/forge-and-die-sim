@@ -72,7 +72,7 @@ def tile_type_name(tile_id: int) -> str:
     try:
         t = data.TILES[tile_id]["type"]
         return data.TILE_TYPE_NAMES.get(t, str(t))
-    except (IndexError, KeyError):
+    except (IndexError, KeyError, TypeError):
         return "?"
 
 
@@ -122,6 +122,8 @@ class GamePlayerApp:
 
         # Галочки графика: ключ -> BooleanVar
         self.plot_vars = {}
+        self.series = None
+        self.cursor_line = None
 
         self.root.title(f"Forge & Die II — Game Player — {os.path.basename(log_path)}")
         self.root.geometry("1200x900")
@@ -131,7 +133,48 @@ class GamePlayerApp:
         self.draw_map()
         self.fill_steps_table()
         self.show_properties_empty()
+    # --------------------------------------------------------
+    # Расчёт метрик
+    # --------------------------------------------------------
+    def compute_series(self):
+        """Считает метрики по шагам для графика и TSV."""
+        hp_total = []
+        gold_total = []
+        xp_total = []
+        level_total = []
+        boiets_count = []
+        per_boiets = {i: {"hp": [], "gold": [], "xp": [], "level": []}
+                      for i in range(4)}
 
+        for step in self.steps:
+            party = step.get("party", [])
+            hp_total.append(sum(b["hp"] for b in party))
+            gold_total.append(sum(b["gold"] for b in party))
+            xp_total.append(sum(b["xp"] for b in party))
+            level_total.append(sum(b["level"] for b in party))
+            boiets_count.append(len(party))
+            for i in range(4):
+                if i < len(party):
+                    b = party[i]
+                    per_boiets[i]["hp"].append(b["hp"])
+                    per_boiets[i]["gold"].append(b["gold"])
+                    per_boiets[i]["xp"].append(b["xp"])
+                    per_boiets[i]["level"].append(b["level"])
+                else:
+                    per_boiets[i]["hp"].append(None)
+                    per_boiets[i]["gold"].append(None)
+                    per_boiets[i]["xp"].append(None)
+                    per_boiets[i]["level"].append(None)
+
+        self.series = {
+            "hp_total": hp_total,
+            "gold_total": gold_total,
+            "xp_total": xp_total,
+            "level_total": level_total,
+            "boiets_count": boiets_count,
+            "boiets": per_boiets,
+        }
+    
     # --------------------------------------------------------
     def create_widgets(self):
         # Заголовок партии (две строки)
@@ -195,16 +238,16 @@ class GamePlayerApp:
         vsb.pack(side=tk.LEFT, fill=tk.Y)
         self.steps_tree.bind("<<TreeviewSelect>>", self.on_step_click)
 
-        # График (пока пустой)
+        # График
         plot_frame = tk.Frame(self.root)
         plot_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.fig = Figure(figsize=(10, 3), dpi=100)
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.mpl_connect("button_press_event", self.on_plot_click)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        self.draw_plot()
 
-        # Галочки (пока не подключены)
+        # Галочки (общие) + кнопка «Детали бойцов…»
         checks = tk.Frame(self.root)
         checks.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
         tk.Label(checks, text="График:").pack(side=tk.LEFT)
@@ -212,14 +255,21 @@ class GamePlayerApp:
             ("hp_total", "HP сумма"),
             ("gold_total", "золото сумма"),
             ("xp_total", "XP сумма"),
+            ("level_total", "уровень сумма"),
             ("boiets_count", "бойцов"),
-            ("tile_type", "тип тайла"),
-            ("action", "действие"),
+            ("tile_type", "тип тайла (TSV)"),
+            ("action", "действие (TSV)"),
         ]:
             var = tk.BooleanVar(value=self.settings["plot"].get(key, False))
             self.settings["plot"][key] = var
             self.plot_vars[key] = var
-            tk.Checkbutton(checks, text=label, variable=var).pack(side=tk.LEFT)
+            tk.Checkbutton(checks, text=label, variable=var,
+                           command=self.on_plot_var_changed).pack(side=tk.LEFT)
+        tk.Button(checks, text="Детали бойцов…",
+                  command=self.open_boiets_details).pack(side=tk.LEFT, padx=5)
+        tk.Button(checks, text="Экспорт в TSV",
+                  command=self.export_tsv).pack(side=tk.LEFT, padx=5)
+        self.draw_plot()
 
     # --------------------------------------------------------
     # Карта
@@ -300,6 +350,7 @@ class GamePlayerApp:
         self.selection = ("tile", floor, pos)
         self.draw_map()
         self.show_properties_tile(floor, pos)
+        self.draw_plot()
 
     # --------------------------------------------------------
     # Таблица шагов
@@ -324,15 +375,22 @@ class GamePlayerApp:
             ))
 
     def on_step_click(self, event):
-        """Клик по шагу -> выделить шаг (пока только запоминаем, свойства — шаг 4)."""
         sel = self.steps_tree.selection()
         if not sel:
             return
         idx = int(sel[0])
         self.selection = ("step", idx)
         self.draw_map()
-        # свойства шага — шаг 4, пока заглушка
         self.show_properties_step(idx)
+
+        step = self.steps[idx]
+        combat = step.get("combat")
+        if combat and combat.get("rounds"):
+            self.open_combat_btn.config(state=tk.NORMAL)
+        else:
+            self.open_combat_btn.config(state=tk.DISABLED)
+
+        self.draw_plot()
 
     # --------------------------------------------------------
     # Панель свойств
@@ -358,26 +416,280 @@ class GamePlayerApp:
         self.open_combat_btn.config(state=tk.DISABLED)
 
     def show_properties_step(self, idx: int):
-        # Заглушка шага 4 — пока просто сообщение
+        step = self.steps[idx]
+        lines = [f"Шаг {step.get('step', idx)}", ""]
+
+        # Бойцы
+        party = step.get("party", [])
+        if party:
+            lines.append("Бойцы:")
+            for b in party:
+                lines.append(
+                    f"  {b['class']} ур.{b['level']}, "
+                    f"HP {b['hp']}/{b['max_hp']}, "
+                    f"XP {b['xp']}, золото {b['gold']}"
+                )
+            lines.append("")
+
+        # События в начале хода
+        free_events = step.get("free_events", [])
+        if free_events:
+            lines.append("В начале хода:")
+            for ev in free_events:
+                if ev.get("event") == "level_up":
+                    lines.append(
+                        f"  новый уровень "
+                        f"({ev['class']} {ev['from_level']}→{ev['to_level']})"
+                    )
+                else:
+                    lines.append(f"  {ev}")
+            lines.append("")
+
+        # Ход
+        lines.append("Ход:")
+        floor = step.get("floor", 0) + 1
+        pos = step.get("position", 0)
+        tile_id = step.get("tile_id", "?")
+        lines.append(f"  этаж: {floor}, позиция: {pos}, тайл: ({tile_id}) {tile_type_name(tile_id)}")
+
+        avail = ", ".join(action_name(a) for a in step.get("available", []))
+        lines.append(f"  доступно: {avail}")
+        lines.append(f"  выбрано:  {action_name(step.get('action', -1))}")
+
+        flee_roll = step.get("flee_roll")
+        if flee_roll is not None:
+            outcome = "побег" if flee_roll <= 3 else "неудача"
+            lines.append(f"  попытка бегства: d6={flee_roll} ({outcome})")
+
+        combat = step.get("combat")
+        if combat:
+            rounds = len(combat.get("rounds", []))
+            res = combat.get("result", "?")
+            res_ru = {"win": "Победа", "lose": "Поражение",
+                      "flee": "Побег", "stuck": "Зависание"}.get(res, res)
+            xp = combat.get("xp_gained", 0)
+            gd = combat.get("gold_gained", 0)
+            lines.append(f"  бой: {res_ru}, {rounds} раунда, XP +{xp}, золото +{gd}")
+            monsters = combat.get("monsters", [])
+            if monsters:
+                names = []
+                for m in monsters:
+                    pool = m["pool"]
+                    monster = m["monster"]
+                    try:
+                        name = data.MONSTERS[pool][monster]["name"]
+                    except (IndexError, KeyError):
+                        name = "?"
+                    names.append(f"({pool + 1}.{monster + 1}) {name}")
+                lines.append(f"    монстры: {', '.join(names)}")
+
         self.props_text.delete("1.0", tk.END)
-        self.props_text.insert(tk.END, f"Шаг {idx}\n\n(свойства шага — шаг 4)")
-        self.open_combat_btn.config(state=tk.DISABLED)
+        self.props_text.insert(tk.END, "\n".join(lines))
 
     def open_combat(self):
-        # Заглушка шага 4
-        pass
+        if not self.selection or self.selection[0] != "step":
+            return
+        idx = self.selection[1]
+        step = self.steps[idx]
+        combat = step.get("combat")
+        if not combat or not combat.get("rounds"):
+            return
+        combat_player_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "combat_player.py"
+        )
+        try:
+            subprocess.Popen([sys.executable, combat_player_path,
+                              self.log_path, str(idx)])
+        except Exception as e:
+            messagebox.showerror("Ошибка запуска", str(e))
 
     # --------------------------------------------------------
-    # График (заглушка)
+    # График
     # --------------------------------------------------------
     def draw_plot(self):
         self.ax.clear()
         self.ax.set_xlabel("Шаг")
         self.ax.set_ylabel("Значение")
-        self.ax.set_title("График (пока пусто)")
+        self.ax.set_title("Метрики по шагам")
         self.ax.grid(True, alpha=0.3)
+
+        if not self.series:
+            self.compute_series()
+
+        xs = list(range(len(self.steps)))
+        s = self.series
+
+        # общие числовые
+        for key, label in [
+            ("hp_total", "HP сумма"),
+            ("gold_total", "золото сумма"),
+            ("xp_total", "XP сумма"),
+            ("level_total", "уровень сумма"),
+            ("boiets_count", "бойцов"),
+        ]:
+            var = self.plot_vars.get(key)
+            if var is not None and var.get():
+                self.ax.plot(xs, s[key], linewidth=1.5, label=label)
+
+        # детали по бойцам
+        for i in range(4):
+            for sub, label_sub in [
+                ("hp", "HP"), ("gold", "золото"),
+                ("xp", "XP"), ("level", "уровень"),
+            ]:
+                key = f"boiets_{i+1}_{sub}"
+                var = self.plot_vars.get(key)
+                if var is not None and var.get():
+                    self.ax.plot(xs, s["boiets"][i][sub],
+                                 linewidth=1.2, label=f"Б{i+1} {label_sub}")
+
+        # курсор на выделенном шаге
+        self.cursor_line = None
+        if self.selection and self.selection[0] == "step":
+            idx = self.selection[1]
+            if 0 <= idx < len(self.steps):
+                self.cursor_line = self.ax.axvline(
+                    x=idx, color="red", linestyle="--", linewidth=1
+                )
+
+        if self.ax.get_legend_handles_labels()[0]:
+            self.ax.legend(loc="upper right", fontsize=8)
+
         self.canvas.draw()
 
+    # --------------------------------------------------------
+    def on_plot_var_changed(self):
+        self.draw_plot()    
+    
+    # --------------------------------------------------------
+    def export_tsv(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".tsv",
+            filetypes=[("TSV", "*.tsv"), ("All files", "*.*")],
+            initialfile=os.path.splitext(os.path.basename(self.log_path))[0] + ".tsv",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                self._write_tsv(f)
+            messagebox.showinfo("Экспорт", f"Сохранено: {path}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+
+    def _write_tsv(self, f):
+        if not self.series:
+            self.compute_series()
+
+        # Список колонок: (ключ, заголовок, тип)
+        # тип: "series" — из self.series (число), "step" — из шага (категориальное)
+        columns = [("step", "step", "step")]
+
+        # общие числовые
+        for key, label in [
+            ("hp_total", "hp_total"),
+            ("gold_total", "gold_total"),
+            ("xp_total", "xp_total"),
+            ("level_total", "level_total"),
+            ("boiets_count", "boiets_count"),
+        ]:
+            var = self.plot_vars.get(key)
+            if var is not None and var.get():
+                columns.append((key, label, "series"))
+
+        # детали по бойцам
+        for i in range(4):
+            for sub in ("hp", "gold", "xp", "level"):
+                key = f"boiets_{i+1}_{sub}"
+                var = self.plot_vars.get(key)
+                if var is not None and var.get():
+                    columns.append((key, key, "boiets_series"))
+
+        # категориальные
+        if self.plot_vars.get("tile_type") and self.plot_vars["tile_type"].get():
+            columns.append(("tile_type", "tile_type", "step_tile_type"))
+        if self.plot_vars.get("action") and self.plot_vars["action"].get():
+            columns.append(("action", "action", "step_action"))
+
+        # заголовок
+        f.write("\t".join(label for _, label, _ in columns) + "\n")
+
+        # строки
+        for idx, step in enumerate(self.steps):
+            row = []
+            for key, label, kind in columns:
+                if kind == "step":
+                    row.append(str(step.get("step", idx)))
+                elif kind == "series":
+                    row.append(str(self.series[key][idx]))
+                elif kind == "boiets_series":
+                    # ключ вида boiets_1_hp -> i=0, sub="hp"
+                    parts = key.split("_")
+                    bi = int(parts[1]) - 1
+                    sub = parts[2]
+                    val = self.series["boiets"][bi][sub][idx]
+                    row.append("" if val is None else str(val))
+                elif kind == "step_tile_type":
+                    row.append(tile_type_name(step.get("tile_id", "?")))
+                elif kind == "step_action":
+                    row.append(action_name(step.get("action", -1)))
+            f.write("\t".join(row) + "\n")    
+    
+    # --------------------------------------------------------
+    def open_boiets_details(self):
+        win = tk.Toplevel(self.root)
+        win.title("Детали бойцов")
+        win.transient(self.root)
+        win.grab_set()
+
+        temp_vars = {}
+        for i in range(4):
+            frame = tk.LabelFrame(win, text=f"Боец {i+1}")
+            frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=3)
+            for sub, label_sub in [
+                ("hp", "HP"), ("gold", "золото"),
+                ("xp", "XP"), ("level", "уровень"),
+            ]:
+                key = f"boiets_{i+1}_{sub}"
+                existing = self.plot_vars.get(key)
+                value = existing.get() if existing is not None else False
+                var = tk.BooleanVar(value=value)
+                temp_vars[key] = var
+                tk.Checkbutton(frame, text=label_sub,
+                               variable=var).pack(side=tk.LEFT)
+
+        btns = tk.Frame(win)
+        btns.pack(side=tk.TOP, pady=5)
+
+        def on_ok():
+            for key, var in temp_vars.items():
+                if key in self.plot_vars:
+                    self.plot_vars[key].set(var.get())
+                else:
+                    self.plot_vars[key] = var
+                    self.settings["plot"][key] = var
+            win.destroy()
+            self.draw_plot()
+
+        def on_cancel():
+            win.destroy()
+
+        tk.Button(btns, text="ОК", command=on_ok).pack(side=tk.LEFT, padx=5)
+        tk.Button(btns, text="Отмена", command=on_cancel).pack(side=tk.LEFT, padx=5)    
+    
+    # --------------------------------------------------------
+    def on_plot_click(self, event):
+        if event.xdata is None:
+            return
+        idx = int(round(event.xdata))
+        if idx < 0:
+            idx = 0
+        if idx >= len(self.steps):
+            idx = len(self.steps) - 1
+        # выделяем шаг в таблице; синхронизация через on_step_click
+        self.steps_tree.selection_set(str(idx))
+        self.steps_tree.see(str(idx))    
+    
     # --------------------------------------------------------
     def on_close(self):
         save_settings(self.settings)

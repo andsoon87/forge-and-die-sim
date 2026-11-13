@@ -200,25 +200,27 @@ def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
 # ============================================================
 # Бой
 # ============================================================
-def run_combat(party: list, monsters: list, floor_index: int) -> dict:
+def run_combat(party: list, monsters: list) -> dict:
     """Проводит бой до победы или поражения команды.
 
-    party    -- список бойцов (живые и мёртвые; мёртвые остаются до конца боя,
-               чтобы после боя можно было распределить их снаряжение/золото,
-               и только затем party очищается от тел).
+    party    -- список бойцов (живые и мёртвые; мёртвые остаются до конца боя).
     monsters -- список боевых экземпляров из draw_monsters.
-    floor_index -- 0..3 (для лога).
 
     Возвращает combat_log:
-      {"floor": int,
-       "monsters_start": [{"pool": int, "monster": int}, ...],
-       "rounds": [{"round": int, "actions": [...]}, ...],
-       "result": "win"|"lose"|"stuck",
-       "xp_gained": int, "gold_gained": int}
+    { "monsters": [{"pool": int, "monster": int}, ...],
+      "rounds": [{"round": int,
+                  "hp_start_round": {"b": [hp...], "m": [hp...]},
+                  "initiative": {"b": [roll_or_None...], "m": [roll_or_None...]},
+                  "actions": [{"type": "attack",
+                               "actor": "b"|"m", "actor_index": int,
+                               "target_index": int, "roll": int, "damage": int}]},
+                 ...,
+                 {"round": N, "hp_start_round": {...} }  # финальный: без initiative и actions
+      ],
+      "result": "win"|"lose"|"stuck", "xp_gained": int, "gold_gained": int }
     """
     combat_log = {
-        "floor": floor_index,
-        "monsters_start": [
+        "monsters": [
             {"pool": m["pool"], "monster": m["monster"]} for m in monsters
         ],
         "rounds": [],
@@ -227,26 +229,58 @@ def run_combat(party: list, monsters: list, floor_index: int) -> dict:
         "gold_gained": 0,
     }
     round_num = 0
+    
     while True:
         round_num += 1
+         
+        # 1. Снимок HP всех участников на начало раунда.
+        hp_start_round = {
+            "b": [b["hp"] for b in party],
+            "m": [m["hp"] for m in monsters],
+        }       
+         
+        # 2. Проверка завершения боя до броска инициативы
+        monsters_alive = [m for m in monsters if m["hp"] > 0]
+        party_alive = [b for b in party if b["hp"] > 0]
+        if not party_alive:
+            combat_log["result"] = "lose"
+        elif not monsters_alive:
+            combat_log["result"] = "win"
+        elif round_num > config.MAX_COMBAT_STEPS:
+            # защита от бесконечного боя (не должно случаться)
+            combat_log["result"] = "stuck"
+        
+        if combat_log["result"] is not None:
+            # финальный раунд: только снимок HP, без инициативы и действий
+            combat_log["rounds"].append({
+                "round": round_num,
+                "hp_start_round": hp_start_round,
+            })
+            break
 
-        # 1. Инициатива: каждый живой участник бросает d6 отдельно за себя.
-        #    Состав party в течение раунда не меняется -- индексы стабильны.
+        # 3. Инициатива: каждый живой участник бросает d6 отдельно за себя.
+        #    init_b/init_m — броски по порядку party/monsters, None для мёртвых.
         participants = []
+        init_b = [None] * len(party)
+        init_m = [None] * len(monsters)
         for i, b in enumerate(party):
             if b["hp"] > 0:
-                participants.append(("boiets", i, roll_d6()))
+                r = roll_d6()
+                participants.append(("b", i, r))
+                init_b[i] = r
         for i, m in enumerate(monsters):
             if m["hp"] > 0:
-                participants.append(("monster", i, roll_d6()))
-        # при равенстве -- случайный порядок: перемешиваем до сортировки
+                r = roll_d6()
+                participants.append(("m", i, r))
+                init_m[i] = r
+        #    порядок действий: перемешиваем и сортируем по убыванию инициативы
         random.shuffle(participants)
         participants.sort(key=lambda x: x[2], reverse=True)
 
-        # 2. Действия в порядке инициативы.
+        # 4. Действия в порядке инициативы.
         round_actions = []
         for kind, idx, init in participants:
-            if kind == "boiets":
+            if kind == "b":
                 b = party[idx]
                 if b["hp"] <= 0:
                     continue  # погиб в этом же раунде до своего хода
@@ -259,12 +293,12 @@ def run_combat(party: list, monsters: list, floor_index: int) -> dict:
                 dmg = max(0, roll + b["at"] - target["df"])
                 target["hp"] -= dmg
                 round_actions.append({
-                    "actor": "boiets",
+                    "type": "attack",
+                    "actor": "b",
                     "actor_index": idx,
                     "target_index": target_j,
                     "roll": roll,
                     "damage": dmg,
-                    "target_hp": target["hp"],
                 })
             else:
                 m = monsters[idx]
@@ -273,41 +307,28 @@ def run_combat(party: list, monsters: list, floor_index: int) -> dict:
                 alive = [j for j, b in enumerate(party) if b["hp"] > 0]
                 if not alive:
                     break
-                # монстр выбирает цель random.randint(1, N)
-                target_idx = random.randint(1, len(alive)) - 1
-                target = party[alive[target_idx]]
+                target_idx = random.choice(alive)
+                target = party[target_idx]
                 roll = roll_d6()
                 dmg = max(0, roll + m["at"] - target["df"])
                 target["hp"] -= dmg
                 round_actions.append({
-                    "actor": "monster",
+                    "type": "attack",
+                    "actor": "m",
                     "actor_index": idx,
-                    "target_index": alive[target_idx],
+                    "target_index": target_idx,
                     "roll": roll,
                     "damage": dmg,
-                    "target_hp": target["hp"],
                 })
 
         combat_log["rounds"].append({
             "round": round_num,
+            "hp_start_round": hp_start_round,
+            "initiative": {"b": init_b, "m": init_m},
             "actions": round_actions,
         })
 
-        # 3. Проверка завершения боя.
-        monsters_alive = [m for m in monsters if m["hp"] > 0]
-        party_alive = [b for b in party if b["hp"] > 0]
-        if not monsters_alive:
-            combat_log["result"] = "win"
-            break
-        if not party_alive:
-            combat_log["result"] = "lose"
-            break
-        if round_num > config.MAX_COMBAT_STEPS:
-            # защита от бесконечного боя (не должно случаться)
-            combat_log["result"] = "stuck"
-            break
-
-    # 4. Награда при победе (делим между выжившими).
+    # 5. Награда при победе (делим между выжившими).
     if combat_log["result"] == "win":
         survivors = [b for b in party if b["hp"] > 0]
         total_xp = sum(m["xp"] for m in monsters)
@@ -328,7 +349,7 @@ def run_combat(party: list, monsters: list, floor_index: int) -> dict:
             combat_log["xp_gained"] = total_xp
             combat_log["gold_gained"] = total_gd
 
-    # 5. Чистка party от тел после боя (распределение снаряжения --
+    # 6. Чистка party от тел после боя (распределение снаряжения --
     #    сюда же, когда появится снаряжение; сейчас распределять нечего).
     party[:] = [b for b in party if b["hp"] > 0]
 
@@ -519,7 +540,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         
         # 8. единая точка вызова run_combat
         if fight:
-            combat_log = run_combat(party, monsters, floor_index)
+            combat_log = run_combat(party, monsters)
             tile["visited"] = True
             if combat_log["result"] == "stuck":
                 # сигнал ошибки симуляции -- прерываем партию

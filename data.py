@@ -300,7 +300,182 @@ CAMP_NEUTRAL_MAX = {1: 3, 2: 4, 3: 5, 4: 6}
 EQUIPMENT = []
 
 # ============================================================
-# СОБЫТИЯ (пока пусто)
+# СОБЫТИЯ (20 карт)
 # ============================================================
+# Формат записи:
+#   {"id", "name", "rules": [rule, ...]}
+# rule:
+#   {"select": sel, "condition": cond, "effects": {...}}
+# sel:   {"all": True} | {"random": True} | {"max": field} | {"min": field}
+# cond:  True | False
+#        | {"<"|"<="|">"|">="|"=="|"!=": (left, right)}    # сравнение
+#        | {"d6": (lo, hi)}                                # бросок d6 в [lo, hi]
+#        | {"and": [expr, ...]}                            # все истинны
+#        | {"or":  [expr, ...]}                            # хотя бы один
+#        | {"not": expr}                                   # отрицание
+# effect: {"gold": [..], "hp": [..], "xp": [..], "turns": int,
+#          "monster": [(pool, index), ..], "guide": True, ...}
+#   числа -- массивы из 4 (этажи 1..4), знак в числе.
+#   "turns" -- длительный эффект (в floor_state["active_effects"]).
+#   "monster" -- (pool, index) конкретный | (pool, None) случайный из пула |
+#                (None, None) случайный из случайного пула.
+#   "guide"   -- тянет тайл к правому свободному выходу.
+# left/right/lo/hi/field: число | ид. бойца | массив из 4 (по этажам). 
 
-EVENTS = []
+EVENTS = [
+    # --- позитивные ---
+    # 1. Найденный клад: +золото
+    {"id": 1, "name": "Найденный клад",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"gold": [3, 6, 12, 24]}},
+     ]},
+
+    # 2. Благословение храма: +HP
+    {"id": 2, "name": "Благословение храма",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"hp": [3, 4, 5, 6]}},
+     ]},
+
+    # 3. Воодушевление: +XP
+    {"id": 3, "name": "Воодушевление",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"xp": [2, 3, 4, 5]}},
+     ]},
+
+    # 4. Торговый караван: +1 карта снаряжения (заглушка 0.4.0)
+    {"id": 4, "name": "Торговый караван",
+     "rules": [
+         {"select": {"random": True}, "condition": True,
+          "effects": {"equipment": [1, 1, 1, 1]}},
+     ]},
+
+    # 5. Проводник: разведка ближайшего свободного выхода (особое)
+    {"id": 5, "name": "Проводник",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"guide": True}},
+     ]},
+
+    # 6. Целебный источник: +HP и +золото
+    {"id": 6, "name": "Целебный источник",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"hp": [2, 3, 4, 5], "gold": [1, 2, 4, 8]}},
+     ]},
+
+    # 7. Удачная сделка: продать 1 карту снаряжения (заглушка)
+    {"id": 7, "name": "Удачная сделка",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"deals": [1, 2, 3, 4]}},
+     ]},
+
+    # --- негативные ---
+    # 8. Засада разбойников: каждый платит золотом, если хватает; иначе -- HP
+    {"id": 8, "name": "Засада разбойников",
+     "rules": [
+         {"select": {"all": True},
+          "condition": {">=": ("gold", [3, 6, 12, 24])},
+          "effects": {"gold": [-3, -6, -12, -24]}},
+         {"select": {"all": True}, "condition": True,
+          "effects": {"hp": [-1, -2, -4, -8]}},
+     ]},
+
+    # 9. Проклятие: -HP
+    {"id": 9, "name": "Проклятие",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"hp": [-2, -3, -4, -5]}},
+     ]},
+
+    # 10. Налог гильдии: -золото
+    {"id": 10, "name": "Налог гильдии",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"gold": [-4, -8, -16, -32]}},
+     ]},
+
+    # 11. Порча снаряжения: сбросить 1 карту снаряжения (заглушка)
+    {"id": 11, "name": "Порча снаряжения",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"equipment": [-1, -1, -1, -1]}},
+     ]},
+
+    # 12. Ловушка: -HP и -золото
+    {"id": 12, "name": "Ловушка",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"hp": [-1, -2, -3, -4], "gold": [-1, -2, -4, -8]}},
+     ]},
+
+    # 13. Болезнь: -HP всем в начале каждого из 3 ходов (over_time)
+    {"id": 13, "name": "Болезнь",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"hp": [-1, -2, -3, -4], "turns": 3}},
+     ]},
+
+    # 14. Обвал в шахте: -золото и -HP
+    {"id": 14, "name": "Обвал в шахте",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"gold": [-3, -6, -12, -24], "hp": [-1, -2, -3, -4]}},
+     ]},
+
+    # --- нейтральные ---
+    # 15. Таинственный незнакомец: d6 1-3 -> +золото, 4-6 -> -золото
+    {"id": 15, "name": "Таинственный незнакомец",
+     "rules": [
+         {"select": {"all": True}, "condition": {"d6": (1, 3)},
+          "effects": {"gold": [2, 4, 8, 16]}},
+         {"select": {"all": True}, "condition": True,
+          "effects": {"gold": [-2, -4, -8, -16]}},
+     ]},
+
+    # 16. Развилка судьбы: выбор +XP или +HP -> теперь: d6 1-3 -> +XP, 4-6 -> +HP
+    #     (выбор игроком убран; трактовка через условие d6)
+    {"id": 16, "name": "Развилка судьбы",
+     "rules": [
+         {"select": {"all": True}, "condition": {"d6": (1, 3)},
+          "effects": {"xp": [1, 2, 3, 4]}},
+         {"select": {"all": True}, "condition": True,
+          "effects": {"hp": [2, 3, 4, 5]}},
+     ]},
+
+    # 17. Испытание силы: боец с наибольшей AT бросает d6 >= AT -> -HP, иначе +золото
+    {"id": 17, "name": "Испытание силы",
+     "rules": [
+         {"select": {"max": "at"}, "condition": {"d6": ("at", 6)},
+          "effects": {"hp": [-2, -3, -4, -5]}},
+         {"select": {"max": "at"}, "condition": True,
+          "effects": {"gold": [2, 4, 8, 16]}},
+     ]},
+
+    # 18. Старый долг: d6 выбирает бойца; если золото >= порога -> -золото, иначе +золото
+    {"id": 18, "name": "Старый долг",
+     "rules": [
+         {"select": {"random": True},
+          "condition": {">=": ("gold", [5, 10, 20, 40])},
+          "effects": {"gold": [-2, -4, -8, -16]}},
+         {"select": {"random": True}, "condition": True,
+          "effects": {"gold": [2, 4, 8, 16]}},
+     ]},
+
+    # 19. Случайная встреча: конкретный монстр по этажу (первый пул этажа)
+    {"id": 19, "name": "Случайная встреча",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"monster": [(0, 0), (1, 0), (2, 0), (3, 0)]}},
+     ]},
+
+    # 20. Забытая карта: случайный монстр пула этажа
+    {"id": 20, "name": "Забытая карта",
+     "rules": [
+         {"select": {"all": True}, "condition": True,
+          "effects": {"monster": [(0, None), (1, None), (2, None), (3, None)]}},
+     ]},
+]

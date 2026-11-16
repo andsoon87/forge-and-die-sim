@@ -376,6 +376,8 @@ class GamePlayerApp:
                 r = combat.get("result", "?")
                 n = len(combat.get("rounds", []))
                 combat_short = f"{r}, {n} р."
+            elif step.get("event"):
+                combat_short = f"событие {step['event'].get('id')}"
             self.steps_tree.insert("", "end", iid=str(idx), values=(
                 step.get("step", idx),
                 step.get("floor", 0) + 1,
@@ -452,15 +454,26 @@ class GamePlayerApp:
         if free_events:
             lines.append("В начале хода:")
             for ev in free_events:
-                if ev.get("event") == "level_up":
+                kind = ev.get("event")
+                if kind == "level_up":
                     cls = data.CLASS_NAMES.get(ev["class"], ev["class"])
                     lines.append(
                         f"  новый уровень "
                         f"({cls} {ev['from_level']}→{ev['to_level']})"
                     )
-                elif ev.get("event") == "death":
+                elif kind == "death":
                     cls = data.CLASS_NAMES.get(ev["class"], ev["class"])
                     lines.append(f"  погиб: {cls} ур.{ev['level']}")
+                elif kind in ("hp", "gold", "xp"):
+                    field_ru = {"hp": "HP", "gold": "золото", "xp": "XP"}[kind]
+                    cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
+                    delta = ev.get("delta", 0)
+                    sign = "+" if delta >= 0 else ""
+                    lines.append(
+                        f"  {field_ru}: {sign}{delta} → {ev.get('after')} ({cls})"
+                    )
+                elif kind == "effect_hung":
+                    lines.append(f"  длительный эффект: {ev.get('turns')} хода")
                 else:
                     lines.append(f"  {ev}")
             lines.append("")
@@ -481,6 +494,7 @@ class GamePlayerApp:
             outcome = "побег" if flee_roll <= 3 else "неудача"
             lines.append(f"  попытка бегства: d6={flee_roll} ({outcome})")
 
+        # Лагерь
         camp = step.get("camp")
         if camp:
             cls = data.CLASS_NAMES.get(camp["class"], camp["class"])
@@ -500,6 +514,39 @@ class GamePlayerApp:
             else:
                 lines.append("  броски: — (повторный визит)")
 
+        # Событие
+        event = step.get("event")
+        if event:
+            lines.append("")
+            lines.append("Событие:")
+            lines.append(f"  ({event.get('id')}) {event.get('name')}")
+            log = event.get("log", [])
+            if log:
+                lines.append("  эффекты:")
+                for e in log:
+                    kind = e.get("event")
+                    if kind in ("gold", "hp", "xp"):
+                        field_ru = {"gold": "золото", "hp": "HP", "xp": "XP"}[kind]
+                        cls = data.CLASS_NAMES.get(e.get("class"), e.get("class"))
+                        delta = e.get("delta", 0)
+                        sign = "+" if delta >= 0 else ""
+                        lines.append(
+                            f"    {field_ru}: {sign}{delta} → {e.get('after')} ({cls})"
+                        )
+                    elif kind == "effect_hung":
+                        lines.append(f"    длительный эффект: {e.get('turns')} хода")
+                    elif kind == "guide":
+                        lines.append(f"    проводник: тайл {e.get('tile_id')}")
+                    elif kind == "guide_noop":
+                        lines.append("    проводник: нет выхода")
+                    elif kind == "stub":
+                        lines.append(f"    (заглушка) {e.get('field')}: {e.get('delta')}")
+                    else:
+                        lines.append(f"    {kind}: {e}")
+            else:
+                lines.append("  (без эффектов)")
+
+        # Бой
         combat = step.get("combat")
         if combat:
             rounds = len(combat.get("rounds", []))

@@ -18,6 +18,9 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import re
+import threading
+
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -34,6 +37,9 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "run_player.json")
 
 DEFAULT_SETTINGS = {
     "last_run_dir": "",
+    "new_run": {"games": config.DEFAULT_GAMES,
+                "class": config.DEFAULT_CLASS,
+                "profile": config.DEFAULT_PROFILE},
     "tsv_cols": {
         "summary": True,
         "final_floor": True,
@@ -54,6 +60,8 @@ def load_settings() -> dict:
             s.setdefault(k, v)
         for k, v in DEFAULT_SETTINGS["tsv_cols"].items():
             s["tsv_cols"].setdefault(k, v)
+        for k, v in DEFAULT_SETTINGS["new_run"].items():
+            s["new_run"].setdefault(k, v)            
         return s
     except Exception:
         return dict(DEFAULT_SETTINGS)
@@ -64,6 +72,7 @@ def save_settings(settings: dict) -> None:
     # преобразуем BooleanVar → bool
     to_save = {
         "last_run_dir": settings.get("last_run_dir", ""),
+        "new_run": settings.get("new_run", {}),
         "tsv_cols": {
             k: (v.get() if isinstance(v, tk.BooleanVar) else bool(v))
             for k, v in settings.get("tsv_cols", {}).items()
@@ -173,6 +182,9 @@ class RunPlayerApp:
 
         self.create_widgets()
         self.load_and_show()
+        
+        self.sim_proc = None
+        self._sim_thread = None
 
     # --------------------------------------------------------
     def create_widgets(self):
@@ -182,8 +194,15 @@ class RunPlayerApp:
         tk.Label(top, text="Прогон:").pack(side=tk.LEFT)
         self.run_label = tk.Label(top, text=self.run_dir, anchor="w")
         self.run_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        tk.Button(top, text="Выбрать…", command=self.choose_run).pack(side=tk.LEFT)
-        tk.Button(top, text="Обновить", command=self.load_and_show).pack(side=tk.LEFT, padx=2)
+        self.btn_new = tk.Button(top, text="Новый…", command=self.open_new_run)
+        self.btn_new.pack(side=tk.LEFT)
+        self.btn_choose = tk.Button(top, text="Выбрать…", command=self.choose_run)
+        self.btn_choose.pack(side=tk.LEFT)
+        self.btn_refresh = tk.Button(top, text="Обновить", command=self.load_and_show)
+        self.btn_refresh.pack(side=tk.LEFT, padx=2)
+        # скрытые по умолчанию (режим «симуляция»)
+        self.lbl_progress = tk.Label(top, text="")
+        self.btn_stop = tk.Button(top, text="Прервать", command=self.stop_simulation)
 
         # Сводка
         summary_frame = tk.Frame(self.root)
@@ -259,7 +278,80 @@ class RunPlayerApp:
         self.settings["last_run_dir"] = path
         self.run_label.config(text=path)
         self.load_and_show()
+    
+    # --------------------------------------------------------
+    def open_new_run(self):
+        NewRunDialog(self.root, self.settings, self)
+        
+    # --------------------------------------------------------
+    def start_simulation(self, proc):
+        self.sim_proc = proc
+        self.btn_new.config(state=tk.DISABLED)
+        self.btn_choose.pack_forget()
+        self.btn_refresh.pack_forget()
+        self.lbl_progress.config(text="0/?")
+        self.lbl_progress.pack(side=tk.LEFT, padx=2)
+        self.btn_stop.pack(side=tk.LEFT, padx=2)
+        self._sim_thread = threading.Thread(
+            target=self._watch_sim, args=(proc,), daemon=True)
+        self._sim_thread.start()
 
+    # --------------------------------------------------------
+    def _watch_sim(self, proc):
+        """Читает stdout simulator.py посимвольно, парсит прогресс и run_dir."""
+        buf = ""
+        run_dir = None
+        while True:
+            ch = proc.stdout.read(1)
+            if not ch:
+                break
+            if ch in ("\r", "\n"):
+                line = buf
+                buf = ""
+                if line:
+                    m = re.search(r"\[(\d+)/(\d+)\]", line)
+                    if m:
+                        n, total = int(m.group(1)), int(m.group(2))
+                        self.root.after(0, lambda n=n, t=total:
+                                        self._update_progress(n, t))
+                    m = re.search(r"Логи:\s*(.+)$", line)
+                    if m:
+                        run_dir = m.group(1).strip()
+            else:
+                buf += ch
+        proc.wait()
+        code = proc.returncode
+        self.root.after(0, lambda: self._on_sim_done(code, run_dir))
+
+    # --------------------------------------------------------
+    def _update_progress(self, n, total):
+        self.lbl_progress.config(text=f"{n}/{total}")
+
+    # --------------------------------------------------------
+    def _on_sim_done(self, code, run_dir):
+        self.sim_proc = None
+        self.btn_new.config(state=tk.NORMAL)
+        self.lbl_progress.pack_forget()
+        self.btn_stop.pack_forget()
+        self.btn_choose.pack(side=tk.LEFT)
+        self.btn_refresh.pack(side=tk.LEFT, padx=2)
+        if code != 0:
+            messagebox.showerror("Симулятор",
+                                 f"Завершился с ошибкой (код {code})")
+            return
+        if not run_dir:
+            messagebox.showwarning("Симулятор",
+                                   "Прогон завершён, но путь к логам не найден")
+            return
+        self.run_dir = run_dir
+        self.settings["last_run_dir"] = run_dir
+        self.run_label.config(text=run_dir)
+        self.load_and_show()
+
+    # --------------------------------------------------------
+    def stop_simulation(self):
+        if self.sim_proc is not None:
+            self.sim_proc.terminate()
     # --------------------------------------------------------
     def load_and_show(self):
         try:
@@ -480,8 +572,88 @@ class RunPlayerApp:
         return f"{(part / total * 100):.1f}%" if total else "0.0%"
 
     def on_close(self):
+        if self.sim_proc is not None:
+            try:
+                self.sim_proc.terminate()
+            except Exception:
+                pass
         save_settings(self.settings)
         self.root.destroy()
+
+# ============================================================
+# Запуск прогонов из интерфейса
+# ============================================================
+class NewRunDialog:
+    """Диалог «Новый прогон»: параметры и запуск simulator.py."""
+
+    def __init__(self, parent, settings, app):
+        self.app = app
+        self.settings = settings
+        self.win = tk.Toplevel(parent)
+        self.win.title("Новый прогон")
+        self.win.transient(parent)
+        self.win.grab_set()
+        self.win.resizable(False, False)
+
+        nr = settings.get("new_run", {})
+
+        # Число партий
+        row = tk.Frame(self.win); row.pack(side=tk.TOP, fill=tk.X, padx=8, pady=4)
+        tk.Label(row, text="Число партий:", width=16, anchor="w").pack(side=tk.LEFT)
+        self.games_var = tk.StringVar(value=str(nr.get("games", config.DEFAULT_GAMES)))
+        tk.Entry(row, textvariable=self.games_var, width=12).pack(side=tk.LEFT)
+
+        # Класс
+        row = tk.Frame(self.win); row.pack(side=tk.TOP, fill=tk.X, padx=8, pady=4)
+        tk.Label(row, text="Стартовый класс:", width=16, anchor="w").pack(side=tk.LEFT)
+        self.class_var = tk.StringVar(value=nr.get("class", config.DEFAULT_CLASS))
+        ttk.Combobox(row, textvariable=self.class_var, state="readonly",
+                        values=list(data.CLASSES.keys()), width=10).pack(side=tk.LEFT)
+
+        # Стратегия
+        row = tk.Frame(self.win); row.pack(side=tk.TOP, fill=tk.X, padx=8, pady=4)
+        tk.Label(row, text="Стратегия бота:", width=16, anchor="w").pack(side=tk.LEFT)
+        self.profile_var = tk.StringVar(value=nr.get("profile", config.DEFAULT_PROFILE))
+        ttk.Combobox(row, textvariable=self.profile_var, state="readonly",
+                        values=["rusher"], width=10).pack(side=tk.LEFT)
+
+        # Кнопки
+        btns = tk.Frame(self.win); btns.pack(side=tk.TOP, pady=8)
+        tk.Button(btns, text="Запустить", command=self.on_run).pack(side=tk.LEFT, padx=4)
+        tk.Button(btns, text="Отмена", command=self.win.destroy).pack(side=tk.LEFT, padx=4)
+
+    def on_run(self):
+        try:
+            n = int(self.games_var.get())
+            if n <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Новый прогон", "Число партий — целое > 0", parent=self.win)
+            return
+        klass = self.class_var.get()
+        profile = self.profile_var.get()
+
+        # сохранить в настройки
+        self.settings["new_run"] = {"games": n, "class": klass, "profile": profile}
+
+        simulator_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "simulator.py")
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, simulator_path,
+                 "--games", str(n),
+                 "--class", klass,
+                 "--profile", profile],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as e:
+            messagebox.showerror("Ошибка запуска", str(e), parent=self.win)
+            return
+        self.app.start_simulation(proc)
+        self.win.destroy()
 
 # ============================================================
 # main

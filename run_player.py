@@ -176,7 +176,7 @@ class RunPlayerApp:
         self.run = None
         self.stats = None
 
-        self.root.title(f"Forge & Die II — Run Player -- {os.path.basename(run_dir.rstrip('/'))}")
+        self._update_title()
         self.root.geometry("1000x800")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -263,7 +263,12 @@ class RunPlayerApp:
         self.ax2 = self.fig.add_subplot(122)
         self.canvas = FigureCanvasTkAgg(self.fig, master=plots_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
+    
+    # --------------------------------------------------------
+    def _update_title(self):
+        run_name = os.path.basename(self.run_dir.rstrip("/")) if self.run_dir else "?"
+        self.root.title(f"Forge & Die II — Run Player -- {run_name}")
+    
     # --------------------------------------------------------
     def choose_run(self):
         path = filedialog.askdirectory(
@@ -277,6 +282,7 @@ class RunPlayerApp:
         self.run_dir = path
         self.settings["last_run_dir"] = path
         self.run_label.config(text=path)
+        self._update_title()
         self.load_and_show()
     
     # --------------------------------------------------------
@@ -346,6 +352,7 @@ class RunPlayerApp:
         self.run_dir = run_dir
         self.settings["last_run_dir"] = run_dir
         self.run_label.config(text=run_dir)
+        self._update_title()
         self.load_and_show()
 
     # --------------------------------------------------------

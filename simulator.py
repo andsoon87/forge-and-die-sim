@@ -80,6 +80,7 @@ def create_floor_state(floor_index: int) -> dict:
     start_tile["id"] = 0
     start_tile["visited"] = True  # старт уже посещён
     
+    # Колода тайлов этажа: перемешиваем 60 карт без повторов в пределах этажа
     tiles_deck = []
     for i, t in enumerate(data.TILES):
         if i == 0:
@@ -88,9 +89,12 @@ def create_floor_state(floor_index: int) -> dict:
         tile_copy["id"] = i
         tile_copy["visited"] = False
         tiles_deck.append(tile_copy)
-    
     random.shuffle(tiles_deck)
 
+    # Колода событий этажа: перемешиваем 20 карт, без повторов в пределах этажа.
+    events_deck = [dict(card) for card in data.EVENTS]
+    random.shuffle(events_deck)
+    
     return {
         "floor_index": floor_index,
         "tiles": [start_tile],
@@ -98,17 +102,266 @@ def create_floor_state(floor_index: int) -> dict:
         "floor_steps": 0,
         "forge_found": False,
         "tiles_deck": tiles_deck,
+        "events_deck": events_deck,
+        "active_effects": [],
     }
+
+# ============================================================
+# События: вычисление condition, select, effects
+# ============================================================
+def _resolve(value, boiets: dict, floor_index: int):
+    """Резолвит операнд условия/эффекта.
+
+    value -- число | строка-идентификатор | список из 4 (по этажам).
+    Идентификаторы: gold, hp, max_hp, at, df, level, xp, class.
+    """
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return value[floor_index]
+    if isinstance(value, str):
+        return boiets[value]
+    raise TypeError(f"Неизвестный операнд: {value!r}")
+
+def _compare(op: str, left, right) -> bool:
+    """Сравнение с проверкой типов: <,<=,>,>= -- только числа; ==,!= -- числа/строки."""
+    if op in ("==", "!="):
+        result = (left == right)
+        return result if op == "==" else not result
+    if op in ("<", "<=", ">", ">="):
+        if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
+            raise TypeError(f"Сравнение {op} требует чисел, получено {left!r}, {right!r}")
+        if op == "<":  return left < right
+        if op == "<=": return left <= right
+        if op == ">":  return left > right
+        return left >= right
+    raise ValueError(f"Неизвестный оператор: {op!r}")
+
+def eval_condition(cond, boiets: dict, floor_index: int, d6: int) -> bool:
+    """Вычисляет condition для одного бойца. Чистая (d6 передан снаружи).
+
+    cond -- True/False | {op, left, right} | {"d6", lo, hi} |
+            {"and", ...} | {"or", ...} | {"not", expr}
+    """
+    if cond is True:
+        return True
+    if cond is False:
+        return False
+    if not isinstance(cond, dict):
+        raise TypeError(f"Неизвестная форма condition: {cond!r}")
+
+    if "and" in cond:
+        return all(eval_condition(e, boiets, floor_index, d6) for e in cond["and"])
+    if "or" in cond:
+        return any(eval_condition(e, boiets, floor_index, d6) for e in cond["or"])
+    if "not" in cond:
+        return not eval_condition(cond["not"], boiets, floor_index, d6)
+    if "d6" in cond:
+        lo = _resolve(cond["d6"][0], boiets, floor_index)
+        hi = _resolve(cond["d6"][1], boiets, floor_index)
+        return lo <= d6 <= hi
+
+    # сравнение: ровно один ключ-оператор
+    if len(cond) != 1:
+        raise ValueError(f"Ожидался один оператор, получено: {cond!r}")
+    op = next(iter(cond))
+    left, right = cond[op]
+    return _compare(op, _resolve(left, boiets, floor_index),
+                        _resolve(right, boiets, floor_index))
+
+def resolve_select(sel: dict, party: list) -> list:
+    """Возвращает список выбранных бойцов по select-выражению.
+
+    {"all"} | {"random"} | {"max", field} | {"min", field}
+    При равенстве max/min -- первый по порядку в party.
+    """
+    if "all" in sel:
+        return list(party)
+    if "random" in sel:
+        return [random.choice(party)] if party else []
+    if "max" in sel:
+        if not party:
+            return []
+        field = sel["max"]
+        best = max(party, key=lambda b: b[field])
+        return [best]
+    if "min" in sel:
+        if not party:
+            return []
+        field = sel["min"]
+        best = min(party, key=lambda b: b[field])
+        return [best]
+    raise ValueError(f"Неизвестный select: {sel!r}")
+
+def apply_effects(effects: dict, targets: list, floor_index: int,
+                  source, floor_state: dict,
+                  select_expr: dict = None, condition=None) -> tuple:
+    """Применяет effects к targets. Возвращает (log, monsters_specs).
+
+    effects   -- {"gold": [...], "hp": [...], "xp": [...], "turns": int,
+                  "monster": [...], "guide": True, ...}
+    "monster" -- [(pool, index), ...] по этажам; одна спецификация = один монстр
+                 (дедупликация в apply_event).
+    "guide"   -- действие с полем (тянет тайл справа), без значения.
+    "turns" -- эффект НЕ применяется сразу, а вешается в active_effects.
+    Иначе -- мгновенно к каждому target (gold>=0, hp в [0, max_hp]).
+    """
+    turns = effects.get("turns")
+    log = []
+    monsters_specs = []    
+    field_actions = []
+
+    if turns is not None:
+        for t in targets:
+            eff_copy = {}
+            for k, v in effects.items():
+                if k == "turns":
+                    continue
+                eff_copy[k] = _resolve(v, t, floor_index)
+            floor_state["active_effects"].append({
+                "target": t,
+                "effects": eff_copy,
+                "turns_left": turns,
+                "source": source,
+            })
+            log.append({"event": "effect_hung", "source": source,
+                        "class": t["class"], "turns": turns})
+        return log, monsters_specs, field_actions
+
+    for t in targets:
+        for k, v in effects.items():
+            if k == "monster":
+                spec = v[floor_index]                # (pool, index)
+                monsters_specs.append(tuple(spec))
+                continue
+            if k == "guide":
+                field_actions.append("guide")
+                continue            
+            amount = _resolve(v, t, floor_index)
+            if k == "gold":
+                t["gold"] = max(0, t["gold"] + amount)
+                log.append({"event": "gold", "class": t["class"],
+                            "delta": amount, "after": t["gold"]})
+            elif k == "hp":
+                t["hp"] = max(0, min(t["max_hp"], t["hp"] + amount))
+                log.append({"event": "hp", "class": t["class"],
+                            "delta": amount, "after": t["hp"]})
+            elif k == "xp":
+                t["xp"] += amount
+                log.append({"event": "xp", "class": t["class"],
+                            "delta": amount, "after": t["xp"]})
+            else:
+                log.append({"event": "stub", "field": k, "delta": amount})
+    return log, monsters_specs, field_actions
+
+def apply_event(event: dict, party: list, floor_state: dict) -> tuple:
+    """Применяет карту события к команде. Возвращает (log, monsters_specs, field_actions).
+
+    Правила exclusive на бойца. monster-спецификации дедуплицируются (set)
+    guide-действия собираются в список.
+    """
+    floor_index = floor_state["floor_index"]
+    log = []
+    handled = [False] * len(party)
+    all_specs = set()
+    field_actions = []
+
+    for rule in event["rules"]:
+        targets = resolve_select(rule["select"], party)
+        target_ids = {id(b) for b in targets}
+        for i, b in enumerate(party):
+            if handled[i]:
+                continue
+            if id(b) not in target_ids:
+                continue
+            d6 = roll_d6()
+            if eval_condition(rule["condition"], b, floor_index, d6):
+                part_log, part_specs, part_actions = apply_effects(
+                    rule["effects"], [b], floor_index,
+                    source=event.get("id"),
+                    floor_state=floor_state,
+                    select_expr=rule["select"],
+                    condition=rule["condition"],
+                )
+                log.extend(part_log)
+                all_specs.update(part_specs)
+                field_actions.extend(part_actions)
+                handled[i] = True
+
+    return log, list(all_specs), field_actions
+
+def tick_active_effects(party: list, floor_state: dict) -> list:
+    """Тикает active_effects: каждый эффект привязан к бойцу (target),
+    применяется только к нему, turns_left уменьшается, истёкшие убираются.
+    Эффекты на выбывших бойцах снимаются в cleanup_dead (после тика).
+    """
+    log = []
+    remaining = []
+
+    for eff in floor_state["active_effects"]:
+        t = eff["target"]
+        for k, amount in eff["effects"].items():
+            if k == "hp":
+                t["hp"] = max(0, min(t["max_hp"], t["hp"] + amount))
+                log.append({"event": "hp", "class": t["class"],
+                            "delta": amount, "after": t["hp"]})
+            elif k == "gold":
+                t["gold"] = max(0, t["gold"] + amount)
+                log.append({"event": "gold", "class": t["class"],
+                            "delta": amount, "after": t["gold"]})
+            elif k == "xp":
+                t["xp"] += amount
+                log.append({"event": "xp", "class": t["class"],
+                            "delta": amount, "after": t["xp"]})
+        eff["turns_left"] -= 1
+        if eff["turns_left"] > 0:
+            remaining.append(eff)
+
+    floor_state["active_effects"] = remaining
+    return log
+
+def _do_guide(floor_state: dict) -> list:
+    """«Проводник»: тянет тайл справа от текущей позиции, если там пусто."""
+    pos = floor_state["position"]
+    tiles = floor_state["tiles"]
+    if pos == len(tiles) - 1 and floor_state["tiles_deck"]:
+        new_tile = floor_state["tiles_deck"].pop(0)
+        tiles.append(new_tile)
+        return [{"event": "guide", "tile_id": new_tile["id"]}]
+    return [{"event": "guide_noop"}]
+
+def resolve_event(tile: dict, party: list, floor_state: dict) -> dict:
+    """Применяет событие с тайла. Возвращает {"event_log": [...], "combat_log": ...|None}.
+
+    Бой (если есть monster-спецификации) -- один, через run_combat.
+    guide-действия выполняются после события.
+    """
+    event = tile.get("event")
+    if event is None:
+        return {"event_log": [], "combat_log": None}
+
+    event_log, specs, field_actions = apply_event(event, party, floor_state)
+
+    combat_log = None
+    if specs:
+        monsters = build_event_monsters(specs)
+        combat_log = run_combat(party, monsters)
+
+    for act in field_actions:
+        if act == "guide":
+            event_log.extend(_do_guide(floor_state))
+        
+    return {"event_log": event_log, "combat_log": combat_log}
 
 # ============================================================
 # Свободная фаза
 # ============================================================
 # Проверка на умерших в пати
-def cleanup_dead(party: list) -> tuple:
+def cleanup_dead(party: list, floor_state: dict) -> tuple:
     """Убирает из party бойцов с hp<=0. Возвращает (events, wiped).
-
-    wiped=True, если до чистки кто-то был, а после чистки party пуст
-    (вся команда погибла).
+       Возвращает (events, wiped).
+       wiped=True, если до чистки кто-то был, а после чистки party пуст
+       (вся команда погибла).
     """
     events = []
     had_any = len(party) > 0
@@ -120,7 +373,12 @@ def cleanup_dead(party: list) -> tuple:
                 "level": b["level"],
             })
     party[:] = [b for b in party if b["hp"] > 0]
-    wiped = wiped = had_any and not party
+    # убрать эффекты на выбывших бойцах
+    floor_state["active_effects"] = [
+        eff for eff in floor_state["active_effects"]
+        if any(eff["target"] is b for b in party)
+    ]    
+    wiped = had_any and not party
     return events, wiped
 
 # Проверка на повышение уровней
@@ -164,14 +422,15 @@ def check_level_up(boiets: dict) -> list:
 def free_phase(party: list, floor_state: dict) -> tuple:
     """Свободная фаза в начале хода.
 
-    1. Чистка party от трупов (hp<=0) -- смерти от боя, побега, болезней и т.п.
-       Если погибла вся команда -- возвращает (events, True) сразу, без level-up.
-    2. Level-up всем живым бойцам.
-    Позже: эликсиры, «Святая аура», «Чутьё», болезнь.
-    Возвращает список событий для лога.
+    1. Тик active_effects (болезнь и т.п.) -- может добить бойцов.
+    2. Чистка party от трупов (hp<=0); если погибла вся команда -- (events, True).
+    3. Level-up всем живым бойцам.
+    Позже: эликсиры, «Святая аура», «Чутьё».
+    Возвращает (events, wiped).
     """
     events = []
-    dead_events, wiped = cleanup_dead(party)
+    events.extend(tick_active_effects(party, floor_state))
+    dead_events, wiped = cleanup_dead(party, floor_state)
     events.extend(dead_events)
     if wiped:
         return events, True
@@ -246,6 +505,27 @@ def build_camp_monsters(class_name: str, level: int) -> list:
         "gd": 10,
     }]
 
+def build_event_monsters(specs: list) -> list:
+    """Создаёт боевых монстров по спецификациям (pool, index).
+
+    (pool, index) -- конкретный;
+    (pool, None)  -- случайный из пула pool;
+    (None, None)  -- случайный из случайного пула (все 4).
+    """
+    monsters = []
+    for pool, index in specs:
+        if pool is None:
+            pool = random.randrange(len(data.MONSTERS))
+        if index is None:
+            index = random.randrange(len(data.MONSTERS[pool]))
+        src = data.MONSTERS[pool][index]
+        monsters.append({
+            "source": {"type": "monster", "pool": pool, "monster": index},
+            "hp": src["hp"], "max_hp": src["hp"],
+            "at": src["at"], "df": src["df"],
+            "xp": src["xp"], "gd": src["gd"],
+        })
+    return monsters
 
 # ============================================================
 # Бой
@@ -521,10 +801,10 @@ def resolve_tile(position: int, floor_state: dict, party: list) -> list:
     tile = tiles[position]
     
     # 3. Варианты действий по типу тайла.
-    # кузница
+    # 3.1. кузница
     if tile["type"] == data.TileType.FORGE:
         return [data.Action.FORGE, data.Action.SKIP]
-    # монстр
+    # 3.2. монстр
     if tile["type"] == data.TileType.MONSTER:
         if not tile["visited"]:
             return [data.Action.FIGHT, data.Action.FLEE]
@@ -532,7 +812,7 @@ def resolve_tile(position: int, floor_state: dict, party: list) -> list:
         if formula.get("revival") and roll_d6() == 1:
             return [data.Action.FIGHT, data.Action.FLEE]
         return [data.Action.SKIP]
-    #лагерь
+    # 3.3. лагерь
     if tile["type"] == data.TileType.CAMP:
         if tile["visited"]:
             return [data.Action.SKIP]
@@ -544,7 +824,19 @@ def resolve_tile(position: int, floor_state: dict, party: list) -> list:
             if (not camp["present"]) or camp["attitude"] == "neutral":
                 tile["visited"] = True
         return _camp_available(camp, party)
-    
+    # 3.4. Событие: тянем карту один раз, кладём в tile["event"].
+    #      Применение -- в play_one_game (resolve_event).
+    if tile["type"] == data.TileType.EVENT:
+        if tile["visited"]:
+            return [data.Action.SKIP]
+        if tile.get("event") is None:
+            if floor_state["events_deck"]:
+                tile["event"] = floor_state["events_deck"].pop(0)
+            else:
+                # страховка: колода пуста (12 тайлов событий, 20 карт -- не должно)
+                tile["event"] = dict(data.EVENTS[0])
+        return [data.Action.SKIP]
+
     # сокровищница, событие, торговец, старт -- пока только пропуск
     return [data.Action.SKIP]
 
@@ -685,7 +977,9 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         combat_log = None
         flee_roll = None
         fight = False
+        event_snapshot = None
         
+        # 7.1. найм
         if action == data.Action.HIRE:
             # нанять обитателя лагеря (если класс ещё не в команде -- resolve_tile
             # уже это проверила, здесь просто добавляем)
@@ -693,8 +987,10 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             new_b = create_boiets(camp["class"], camp["level"])
             party.append(new_b)
             tile["visited"] = True
+        # 7.2. бой
         elif action == data.Action.FIGHT:
             fight = True
+        # 7.3. бегство
         elif action == data.Action.FLEE:
             flee_roll = roll_d6()
             if flee_roll <= 3:
@@ -707,6 +1003,18 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             else:
                 # побег не удался - начинаем бой
                 fight = True
+        # 7.4. ветка SKIP + EVENT
+        elif action == data.Action.SKIP and tile["type"] == data.TileType.EVENT \
+                and tile.get("event") is not None and not tile["visited"]:
+            tile["visited"] = True
+            res = resolve_event(tile, party, floor_state)
+            
+            combat_log = res["combat_log"]   # события не бой
+            event_snapshot = {
+                "id": tile["event"].get("id"),
+                "name": tile["event"].get("name"),
+                "log": res["event_log"],
+            }
         
         # 8. единая точка вызова run_combat
         if fight:
@@ -732,6 +1040,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             "combat": combat_log,
             "flee_roll": flee_roll,
             "camp": camp_snapshot,
+            "event": event_snapshot,
             "party": [snapshot_boiets(b) for b in party],
         })
         step_num += 1

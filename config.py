@@ -2,14 +2,14 @@
 import os
 
 # Версия проекта (см. README.md, раздел «Версионирование»)
-PROJECT_VERSION = "0.3.0"
+PROJECT_VERSION = "0.4.0"
 DEFAULT_SEED = None  # None = случайный; число = фиксированный
 
 # Путь сохранения логов
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 # Симуляция
-DEFAULT_GAMES = 1000
+DEFAULT_GAMES = 100
 DEFAULT_PROFILE = "rusher"
 DEFAULT_CLASS = "warrior"
 PROGRESS_EVERY = 1  # обновлять строку прогресса каждые N партий

@@ -21,8 +21,8 @@
 |------|------------|
 | `RULES.md` | Правила игры (источник истины) |
 | `config.py` | Константы проекта (`PROJECT_VERSION`, лимиты, пути, дефолты) |
-| `data.py` | Игровые данные: классы, монстры, тайлы, действия, таблицы лагерей. **Только читается** |
-| `simulator.py` | Движок: ходьба, бой, найм, level-up, побег, запись лога партии |
+| `data.py` | Игровые данные: классы, монстры, тайлы, действия, таблицы лагерей, 20 карт событий. **Только читается** |
+| `simulator.py` | Движок: ходьба, бой, найм, события, level-up, побег, запись лога партии |
 | `run_player.py` | Tkinter-обозреватель прогона: таблица партий, сводка, гистограммы, TSV |
 | `game_player.py` | Tkinter-плеер одной партии: карта этажей, таблица шагов, свойства, график |
 | `combat_player.py` | Tkinter-плеер одного боя: бойцы / раунды / противники, действия раунда |
@@ -46,6 +46,15 @@
 
 **`resolve_tile` предлагает, `bot_*` решают.** `resolve_tile(position, floor_state, party) -> list[Action]` — только варианты. `bot_move` — направление, `bot_decide` — выбор `Action`. Не смешивать.
 
+**События.** 20 карт в `data.EVENTS`, колода на этаж (`floor_state["events_deck"]`, без повторов).
+`resolve_tile` тянет карту в `tile["event"]`, применение — в `play_one_game` через
+`resolve_event` → `apply_event`. Правило события: `{"select", "condition", "effects"}`.
+`select` — `{"all": True}` / `{"random": True}` / `{"max": field}`; `condition` — дерево
+(`{op: (left, right)}`, `{"d6": (lo, hi)}`, `{"and"/"or"/"not": ...}`); `effects` — объект
+(`gold`/`hp`/`xp`/`turns`/`monster`/`guide`). Длительные эффекты (`turns`) — в
+`floor_state["active_effects"]`, привязаны к бойцу (`target`), тикают в `free_phase`
+(до `cleanup_dead`). Бой из события — через `monster`-эффект (`(pool, index)`).
+
 **Последовательность хода:**
 1. `free_phase` — чистка трупов, level-up (позже: эликсиры, аура, чутьё, болезнь); если команда вымерла — `dead`.
 2. `bot_move` — 1 / -1.
@@ -68,6 +77,9 @@
 ```bash
 # прогон N партий (seed для воспроизводимости)
 python simulator.py --games 1000 --seed 1
+
+# обозреватель прогона; кнопка «Новый…» — запуск simulator.py из интерфейса
+python run_player.py
 
 # обозреватель прогона (без аргумента — откроет last_run_dir, если есть)
 python run_player.py

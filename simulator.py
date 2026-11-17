@@ -173,6 +173,154 @@ def create_floor_state(floor_index: int) -> dict:
     }
 
 # ============================================================
+# Перераспределение снаряжения
+# ============================================================
+def _item_value(code: str) -> int:
+    """Ключ сортировки: W/S ценятся вдвое (приоритет экипировки)."""
+    item = get_equipment(code)
+    slot = code[1]
+    return item["price"] * 2 if slot in ("W", "S") else item["price"]
+
+
+def _fits_class(code: str, boiets: dict) -> bool:
+    """Подходит ли предмет бойцу по классу (None -- всем)."""
+    item = get_equipment(code)
+    return item["class"] is None or item["class"] == boiets["class"]
+
+
+def bot_distribute(party: list, profile: str) -> tuple:
+    """Перераспределяет снаряжение и золото между живыми бойцами.
+
+    Трупы -- источник (их inventory/gold идут в общий котёл), но не получатели.
+    Ценность для сортировки: price*2 для W/S, price для A.
+    Экипировка по кругу: первый подходящий (класс + свободный слот W/S).
+    Остаток -- по свободным местам (лимит 6).
+    Золото -- поровну живым, остаток лидеру (первый живой).
+
+    В лог пишутся только реальные изменения (before/after по каждому бойцу).
+    Возвращает (events, trash): trash -- предметы, не попавшие никому
+    (остаток pool), для возврата в колоды.
+    """
+    events = []
+    trash = []
+    alive = [b for b in party if b["hp"] > 0]
+    if not alive:
+        return events, trash
+
+    # Снимок "до" (по индексам в party; внутри функции party не меняется)
+    before = []
+    for b in party:
+        before.append({
+            "inventory": list(b["inventory"]),
+            "equipped_weapon": b["equipped_weapon"],
+            "equipped_armor": b["equipped_armor"],
+            "gold": b["gold"],
+        })
+
+    # 1. Сбор
+    pool = []
+    for b in party:
+        pool.extend(b["inventory"])
+        b["inventory"] = []
+        b["equipped_weapon"] = None
+        b["equipped_armor"] = None
+
+    # 2. Сортировка
+    pool.sort(key=lambda c: (_item_value(c), c), reverse=True)
+
+    # 3. Экипировка по кругу
+    while True:
+        taken_this_round = False
+        for b in alive:
+            for i, code in enumerate(pool):
+                if not _fits_class(code, b):
+                    continue
+                slot = code[1]
+                if slot == "W" and b["equipped_weapon"] is not None:
+                    continue
+                if slot == "S" and b["equipped_armor"] is not None:
+                    continue
+                pool.pop(i)
+                b["inventory"].append(code)
+                if slot == "W":
+                    b["equipped_weapon"] = code
+                elif slot == "S":
+                    b["equipped_armor"] = code
+                taken_this_round = True
+                break
+        if not taken_this_round:
+            break
+
+    # 4. Остаток -- по свободным местам (лимит 6), по кругу
+    if pool:
+        while pool:
+            moved = False
+            for b in alive:
+                if not pool:
+                    break
+                if len(b["inventory"]) < 6:
+                    b["inventory"].append(pool.pop(0))
+                    moved = True
+            if not moved:
+                break   # все инвентари полны -- остаток в trash
+
+    # Остаток pool -- в trash (возврат в колоды)
+    trash.extend(pool)
+
+    # 5. Золото
+    total_gold = sum(b["gold"] for b in party)
+    for b in party:
+        b["gold"] = 0
+    share = total_gold // len(alive)
+    remainder = total_gold - share * len(alive)
+    for b in alive:
+        b["gold"] = share
+    alive[0]["gold"] += remainder
+
+    # 6. Дифф "до/после" -- только реальные изменения, трупы пропускаем
+    for idx, b in enumerate(party):
+        if b["hp"] <= 0:
+            continue                          # труп: его добро ушло, видно у получателей
+        bef = before[idx]
+        # инвентарь
+        if bef["inventory"] != b["inventory"]:
+            events.append({"event": "loot", "class": b["class"],
+                           "before": bef["inventory"], "after": list(b["inventory"])})
+        # экипировка -- только изменившиеся поля
+        eq = {}
+        if bef["equipped_weapon"] != b["equipped_weapon"]:
+            eq["weapon"] = {"before": bef["equipped_weapon"],
+                            "after": b["equipped_weapon"]}
+        if bef["equipped_armor"] != b["equipped_armor"]:
+            eq["armor"] = {"before": bef["equipped_armor"],
+                           "after": b["equipped_armor"]}
+        if eq:
+            events.append({"event": "equip", "class": b["class"], **eq})
+        # золото
+        if bef["gold"] != b["gold"]:
+            events.append({"event": "gold", "class": b["class"],
+                           "before": bef["gold"], "after": b["gold"]})
+
+    return events, trash
+
+
+def trim_inventories(party: list) -> tuple:
+    """Обрезает inventory до 6 у всех в party (живых и трупов).
+
+    Возвращает (events, trash): trash -- обрезанные предметы (для колод).
+    """
+    events = []
+    trash = []
+    for b in party:
+        if len(b["inventory"]) > 6:
+            dropped = b["inventory"][6:]
+            b["inventory"] = b["inventory"][:6]
+            events.append({"event": "trim", "class": b["class"],
+                           "dropped": list(dropped)})
+            trash.extend(dropped)
+    return events, trash
+
+# ============================================================
 # События: вычисление condition, select, effects
 # ============================================================
 def _resolve(value, boiets: dict, floor_index: int):
@@ -259,102 +407,80 @@ def resolve_select(sel: dict, party: list) -> list:
         return [best]
     raise ValueError(f"Неизвестный select: {sel!r}")
 
-def apply_effects(effects: dict, targets: list, floor_index: int,
-                  source, floor_state: dict,
-                  select_expr: dict = None, condition=None) -> tuple:
-    """Применяет effects к targets. Возвращает (log, monsters_specs).
+def play_event_rules(event: dict, party: list, floor_state: dict) -> dict:
+    """Проигрывает правила события: select + d6 для condition.
 
-    effects   -- {"gold": [...], "hp": [...], "xp": [...], "turns": int,
-                  "monster": [...], "guide": True, ...}
-    "monster" -- [(pool, index), ...] по этажам; одна спецификация = один монстр
-                 (дедупликация в apply_event).
-    "guide"   -- действие с полем (тянет тайл справа), без значения.
-    "turns" -- эффект НЕ применяется сразу, а вешается в active_effects.
-    Иначе -- мгновенно к каждому target (gold>=0, hp в [0, max_hp]).
-    """
-    turns = effects.get("turns")
-    log = []
-    monsters_specs = []    
-    field_actions = []
-
-    if turns is not None:
-        for t in targets:
-            eff_copy = {}
-            for k, v in effects.items():
-                if k == "turns":
-                    continue
-                eff_copy[k] = _resolve(v, t, floor_index)
-            floor_state["active_effects"].append({
-                "target": t,
-                "effects": eff_copy,
-                "turns_left": turns,
-                "source": source,
-            })
-            log.append({"event": "effect_hung", "source": source,
-                        "class": t["class"], "turns": turns})
-        return log, monsters_specs, field_actions
-
-    for t in targets:
-        for k, v in effects.items():
-            if k == "monster":
-                spec = v[floor_index]                # (pool, index)
-                monsters_specs.append(tuple(spec))
-                continue
-            if k == "guide":
-                field_actions.append("guide")
-                continue            
-            amount = _resolve(v, t, floor_index)
-            if k == "gold":
-                t["gold"] = max(0, t["gold"] + amount)
-                log.append({"event": "gold", "class": t["class"],
-                            "delta": amount, "after": t["gold"]})
-            elif k == "hp":
-                t["hp"] = max(0, min(t["max_hp"], t["hp"] + amount))
-                log.append({"event": "hp", "class": t["class"],
-                            "delta": amount, "after": t["hp"]})
-            elif k == "xp":
-                t["xp"] += amount
-                log.append({"event": "xp", "class": t["class"],
-                            "delta": amount, "after": t["xp"]})
-            else:
-                log.append({"event": "stub", "field": k, "delta": amount})
-    return log, monsters_specs, field_actions
-
-def apply_event(event: dict, party: list, floor_state: dict) -> tuple:
-    """Применяет карту события к команде. Возвращает (log, monsters_specs, field_actions).
-
-    Правила exclusive на бойца. monster-спецификации дедуплицируются (set)
-    guide-действия собираются в список.
+    Возвращает {"effects": [...], "monsters": [(pool, index), ...]}.
+    НЕ применяет эффекты (это делает apply_event); d6 бросается здесь,
+    ровно один раз.
     """
     floor_index = floor_state["floor_index"]
-    log = []
+    effects = []
+    monsters = []
     handled = [False] * len(party)
-    all_specs = set()
-    field_actions = []
 
     for rule in event["rules"]:
         targets = resolve_select(rule["select"], party)
         target_ids = {id(b) for b in targets}
         for i, b in enumerate(party):
-            if handled[i]:
-                continue
-            if id(b) not in target_ids:
+            if handled[i] or id(b) not in target_ids:
                 continue
             d6 = roll_d6()
             if eval_condition(rule["condition"], b, floor_index, d6):
-                part_log, part_specs, part_actions = apply_effects(
-                    rule["effects"], [b], floor_index,
-                    source=event.get("id"),
-                    floor_state=floor_state,
-                    select_expr=rule["select"],
-                    condition=rule["condition"],
-                )
-                log.extend(part_log)
-                all_specs.update(part_specs)
-                field_actions.extend(part_actions)
+                eff = {}
+                for k, v in rule["effects"].items():
+                    if k == "monster":
+                        spec = v[floor_index]          # (pool, index)
+                        monsters.append(tuple(spec))
+                        continue
+                    if k == "guide":
+                        eff["guide"] = True
+                        continue
+                    eff[k] = _resolve(v, b, floor_index)
+                effects.append({"select": [i], "effects": eff})
                 handled[i] = True
 
-    return log, list(all_specs), field_actions
+    return {"effects": effects, "monsters": list(set(monsters))}
+
+def apply_event(event_result: dict, party: list, floor_state: dict) -> list:
+    """Применяет детерминированный результат события (из play_event_rules).
+       event_result = {"effects": [{"select": [idx, ...], "effects": {...}}, ...]}
+       select -- индексы бойцов в party (на момент проигрывания правил).
+       gold/hp/xp -- сразу; turns -- в active_effects; guide -- _do_guide.
+       monster -- не здесь (собран в tile["monsters"]).
+       Возвращает event_log.
+    """
+    log = []
+    for entry in event_result.get("effects", []):
+        for idx in entry["select"]:
+            if idx >= len(party):
+                continue                    # боец погиб/выбыл между resolve и apply
+            b = party[idx]
+            for k, v in entry["effects"].items():
+                if k == "guide":
+                    log.extend(_do_guide(floor_state))
+                elif k == "turns":
+                    eff = {kk: vv for kk, vv in entry["effects"].items()
+                           if kk != "turns"}
+                    floor_state["active_effects"].append({
+                        "target": b, "effects": eff,
+                        "turns_left": v, "source": None,
+                    })
+                    log.append({"event": "effect_hung",
+                                "class": b["class"], "turns": v})
+                elif k == "gold":
+                    b["gold"] = max(0, b["gold"] + v)
+                    log.append({"event": "gold", "class": b["class"],
+                                "delta": v, "after": b["gold"]})
+                elif k == "hp":
+                    b["hp"] = max(0, min(b["max_hp"], b["hp"] + v))
+                    log.append({"event": "hp", "class": b["class"],
+                                "delta": v, "after": b["hp"]})
+                elif k == "xp":
+                    b["xp"] += v
+                    log.append({"event": "xp", "class": b["class"],
+                                "delta": v, "after": b["xp"]})
+    return log
 
 def tick_active_effects(party: list, floor_state: dict) -> list:
     """Тикает active_effects: каждый эффект привязан к бойцу (target),
@@ -396,40 +522,20 @@ def _do_guide(floor_state: dict) -> list:
         return [{"event": "guide", "tile_id": new_tile["id"]}]
     return [{"event": "guide_noop"}]
 
-def resolve_event(tile: dict, party: list, floor_state: dict) -> dict:
-    """Применяет событие с тайла. Возвращает {"event_log": [...], "combat_log": ...|None}.
-
-    Бой (если есть monster-спецификации) -- один, через run_combat.
-    guide-действия выполняются после события.
-    """
-    event = tile.get("event")
-    if event is None:
-        return {"event_log": [], "combat_log": None}
-
-    event_log, specs, field_actions = apply_event(event, party, floor_state)
-
-    combat_log = None
-    if specs:
-        monsters = build_event_monsters(specs)
-        combat_log = run_combat(party, monsters)
-
-    for act in field_actions:
-        if act == "guide":
-            event_log.extend(_do_guide(floor_state))
-        
-    return {"event_log": event_log, "combat_log": combat_log}
-
 # ============================================================
 # Свободная фаза
 # ============================================================
 # Проверка на умерших в пати
 def cleanup_dead(party: list, floor_state: dict) -> tuple:
-    """Убирает из party бойцов с hp<=0. Возвращает (events, wiped).
-       Возвращает (events, wiped).
-       wiped=True, если до чистки кто-то был, а после чистки party пуст
-       (вся команда погибла).
+    """Убирает из party бойцов с hp<=0. Возвращает (events, wiped, trash).
+
+    При смерти предметы бойца уходят в trash (для возврата в колоды).
+    Золото не трогаем -- его распределение вне cleanup_dead.
+    wiped=True, если до чистки кто-то был, а после чистки party пуст
+    (вся команда погибла).
     """
     events = []
+    trash = []
     had_any = len(party) > 0
     for b in party:
         if b["hp"] <= 0:
@@ -437,15 +543,22 @@ def cleanup_dead(party: list, floor_state: dict) -> tuple:
                 "event": "death",
                 "class": b["class"],
                 "level": b["level"],
+                "inventory": list(b["inventory"]),
+                "equipped_weapon": b["equipped_weapon"],
+                "equipped_armor": b["equipped_armor"],
             })
+            trash.extend(b["inventory"])
+            b["inventory"] = []
+            b["equipped_weapon"] = None
+            b["equipped_armor"] = None
     party[:] = [b for b in party if b["hp"] > 0]
     # убрать эффекты на выбывших бойцах
     floor_state["active_effects"] = [
         eff for eff in floor_state["active_effects"]
         if any(eff["target"] is b for b in party)
-    ]    
+    ]
     wiped = had_any and not party
-    return events, wiped
+    return events, wiped, trash
 
 # Проверка на повышение уровней
 def check_level_up(boiets: dict) -> list:
@@ -482,35 +595,54 @@ def check_level_up(boiets: dict) -> list:
         })
     return events
 
+def collect_trash(trash: list, equipment_decks: dict) -> None:
+    """Возвращает выбывшие предметы в колоды по качеству.
+
+    Не перемешивает: каждый код вставляется в случайное место колоды
+    (включая начало и конец), что эквивалентно «подмешать карту».
+    """
+    for code in trash:
+        deck = equipment_decks[code[0]]          # code[0] -- качество (U/R/V/L)
+        deck.insert(random.randint(0, len(deck)), code)
+    trash.clear()
+    
 # Свободная фаза
-def free_phase(party: list, floor_state: dict) -> tuple:
+def free_phase(party: list, floor_state: dict, profile: str,
+               equipment_decks: dict) -> tuple:
     """Свободная фаза в начале хода.
 
     1. Тик active_effects (болезнь и т.п.) -- может добить бойцов.
-    2. Перераспределение снаряжения и золота между бойцами, включая погибших
-       (0.5.0 -- заглушка; трупы ещё в party; здесь же -- смена экипировки).
-    2. Чистка party от трупов (hp<=0); если погибла вся команда -- (events, True).
-    3. Повышение уровня (level-up) всем живым бойцам (hp += чистовая дельта класса).
-    4. recalc_stats всем живым: at/df/max_hp с учётом снаряжения + клэмп hp.
+    2. bot_distribute -- перераспределение снаряжения и золота (трупы -- источник).
+    3. trim_inventories -- обрезка инвентарей до 6.
+    4. Чистка party от трупов (hp<=0); если погибла вся команда (wiped) -- (events, True).
+    5. Повышение уровня (level-up) всем живым бойцам (hp += чистовая дельта класса).
+    6. recalc_stats всем живым: at/df/max_hp с учётом снаряжения + клэмп hp.
+    7. collect_trash -- возврат выбывших предметов в колоды по качеству.
     Возвращает (events, wiped).
     """
     events = []
+    trash = []
     # 1. тик активных эффектов
     events.extend(tick_active_effects(party, floor_state))
     # 2. перераспределение снаряжения и золота -- заглушка 0.5.0
-    #    (бот видит hp==0, раскидывает inventory/gold живым;
-    #     остаток погребается вместе с трупом на шаге 3)
-    # 3. чистка от трупов
-    dead_events, wiped = cleanup_dead(party, floor_state)
-    events.extend(dead_events)
+    ev, tr = bot_distribute(party, profile)
+    events.extend(ev); trash.extend(tr)
+    # 3. обрезка инвентарей
+    ev, tr = trim_inventories(party)
+    events.extend(ev); trash.extend(tr)
+    # 4. чистка от трупов
+    dead_events, wiped, tr = cleanup_dead(party, floor_state)
+    events.extend(dead_events); trash.extend(tr)
     if wiped:
+        collect_trash(trash, equipment_decks)
         return events, True
-    # 4. повышение уровня
+    # 5. повышение уровня
     for b in party:
         events.extend(check_level_up(b))
-    # 5. пересчёт характеристик
+    # 6. пересчёт характеристик
     for b in party:
         recalc_stats(b)
+    collect_trash(trash, equipment_decks)
     return events, False
 
 # ============================================================
@@ -847,8 +979,63 @@ def _camp_snapshot(tile: dict) -> dict:
         "rolls": camp.get("rolls"),
     }
 
+def _ensure_monsters(tile: dict, floor_state: dict, party: list, kind: str) -> None:
+    """Собирает боевые экземпляры в tile["monsters"] один раз.
+
+    kind: "monster" | "camp".
+    """
+    if tile.get("monsters"):
+        return
+    if kind == "camp":
+        camp = tile["camp"]
+        tile["monsters"] = build_camp_monsters(camp["class"], camp["level"])
+    else:
+        tile["monsters"] = draw_monsters(
+            floor_state["floor_index"], len(party), tile["monster_formula"]
+        )
+
+def _roll_quality(floor_index: int, d6: int) -> str:
+    """Качество предмета в сокровищнице (RULES.md §6.2).
+
+    Возвращает "U"/"R"/"V"/"L" по таблице data.EQUIPMENT_QUALITY_TABLE.
+    """
+    return data.EQUIPMENT_QUALITY_TABLE[d6 - 1][floor_index]
+
+def resolve_treasure(tile: dict, floor_state: dict, equipment_decks: dict) -> None:
+    """Бросает d6 (§6.1) и фиксирует результат в tile["treasure"].
+
+    kind: "gold" | "equipment" | "mimic".
+    d6 4-6 -- карта снаряжения: сначала качество (§6.2), затем тянем из
+    колоды качества. Если колода пуста -- компенсация золотом (d6=2-3).
+    5.1: мимик трактуется как -1 золото лидеру (в 5.2 -- бой).
+    """
+    fi = floor_state["floor_index"]
+    d6 = roll_d6()
+    if d6 == 1:
+        tile["treasure"] = {"kind": "mimic"}
+        return
+    if d6 <= 3:
+        tile["treasure"] = {"kind": "gold", "amount": [3, 6, 12, 24][fi]}
+        return
+    # d6 4-6: карта снаряжения -- сначала качество (§6.2)
+    quality_d6 = roll_d6()
+    quality = _roll_quality(fi, quality_d6)
+    deck = equipment_decks[quality]
+    if not deck:
+        # колода качества пуста -- компенсация золотом (d6=2-3)
+        tile["treasure"] = {"kind": "gold", "amount": [3, 6, 12, 24][fi],
+                            "note": "deck_empty"}
+        return
+    code = deck.pop(0)
+    if d6 == 6:
+        tile["treasure"] = {"kind": "equipment", "code": code,
+                            "gold": [3, 6, 12, 24][fi]}
+    else:
+        tile["treasure"] = {"kind": "equipment", "code": code}
+
 # Разрешение тайла
-def resolve_tile(position: int, floor_state: dict, party: list) -> list:
+def resolve_tile(position: int, floor_state: dict, party: list,
+                 equipment_decks: dict) -> list:
     """Разрешает клетку position: при необходимости вытягивает тайл,
     возвращает список доступных Action.
 
@@ -882,9 +1069,11 @@ def resolve_tile(position: int, floor_state: dict, party: list) -> list:
     # 3.2. монстр
     if tile["type"] == data.TileType.MONSTER:
         if not tile["visited"]:
+            _ensure_monsters(tile, floor_state, party, "monster")
             return [data.Action.FIGHT, data.Action.FLEE]
         formula = tile["monster_formula"]
         if formula.get("revival") and roll_d6() == 1:
+            _ensure_monsters(tile, floor_state, party, "monster")
             return [data.Action.FIGHT, data.Action.FLEE]
         return [data.Action.SKIP]
     # 3.3. лагерь
@@ -895,12 +1084,14 @@ def resolve_tile(position: int, floor_state: dict, party: list) -> list:
         if camp is None:
             camp = _roll_camp(tile, floor_state, party)
             tile["camp"] = camp
-            # «Мёртвые» исходы: пусто или нейтрал -- лагерь исчерпан сразу.
             if (not camp["present"]) or camp["attitude"] == "neutral":
                 tile["visited"] = True
-        return _camp_available(camp, party)
-    # 3.4. Событие: тянем карту один раз, кладём в tile["event"].
-    #      Применение -- в play_one_game (resolve_event).
+        avail = _camp_available(camp, party)
+        if data.Action.FIGHT in avail:
+            _ensure_monsters(tile, floor_state, party, "camp")
+        return avail
+    # 3.4. событие: тянем карту, проигрываем правила (d6 -- здесь),
+    #      фиксируем результат в tile["event_result"], собираем монстров.
     if tile["type"] == data.TileType.EVENT:
         if tile["visited"]:
             return [data.Action.SKIP]
@@ -908,11 +1099,23 @@ def resolve_tile(position: int, floor_state: dict, party: list) -> list:
             if floor_state["events_deck"]:
                 tile["event"] = floor_state["events_deck"].pop(0)
             else:
-                # страховка: колода пуста (12 тайлов событий, 20 карт -- не должно)
                 tile["event"] = dict(data.EVENTS[0])
-        return [data.Action.SKIP]
-
-    # сокровищница, событие, торговец, старт -- пока только пропуск
+        if tile.get("event_result") is None:
+            result = play_event_rules(tile["event"], party, floor_state)
+            tile["event_result"] = {"effects": result["effects"]}
+            if result["monsters"]:
+                tile["monsters"] = build_event_monsters(result["monsters"])
+        if tile.get("monsters"):
+            return [data.Action.FIGHT, data.Action.FLEE]
+        return [data.Action.EVENT]
+    # 3.5. сокровищница
+    if tile["type"] == data.TileType.TREASURE:
+        if tile["visited"]:
+            return [data.Action.SKIP]
+        if tile.get("treasure") is None:
+            resolve_treasure(tile, floor_state, equipment_decks)
+        return [data.Action.TREASURE]
+    # торговец, старт -- пока только пропуск
     return [data.Action.SKIP]
 
 
@@ -979,6 +1182,8 @@ def bot_decide(available: list, party: list, floor_state: dict, profile: str, mo
     # по умолчанию -- первый вариант
     return random.choice(available)
 
+
+
 # ============================================================
 # Завершение партии
 # ============================================================
@@ -999,6 +1204,14 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
     """Одна партия. Возвращает журнал."""
     random.seed(seed)
     party = create_party(class_name)
+
+    # Колоды снаряжения по качеству (одна на игру).
+    equipment_decks = {"U": [], "R": [], "V": [], "L": []}
+    for item in data.EQUIPMENT:
+        equipment_decks[item["code"][0]].append(item["code"])
+    for q in equipment_decks:
+        random.shuffle(equipment_decks[q])
+
     floor_index = 0
     floor_state = create_floor_state(floor_index)
     log = {
@@ -1012,7 +1225,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
     step_num = 0
     while floor_index < 4:
         # 1. свободная фаза (чистка трупов + level-up)
-        free_events, wiped = free_phase(party, floor_state)
+        free_events, wiped = free_phase(party, floor_state, profile, equipment_decks)
         if wiped:
             # вся команда погибла -- партия окончена
             return finalize_game(log, game_world, floor_state, floor_index, "dead")
@@ -1022,7 +1235,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         
         # 3. разрешение клетки (при необходимости тянет тайл)
         target_position = floor_state["position"] + move
-        available = resolve_tile(target_position, floor_state, party)
+        available = resolve_tile(target_position, floor_state, party, equipment_decks)
         
         # 4. смена позиции + инкремент шагов
         floor_state["position"] = target_position
@@ -1030,23 +1243,13 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         tile = floor_state["tiles"][floor_state["position"]]
         action_position = floor_state["position"]  # позиция тайла действия
         
-        # 5. если возможен бой -- готовим противников
-        #    (бот их «видит»; kind определяется по типу тайла)
-        monsters = None
-        if data.Action.FIGHT in available:
-            if tile["type"] == data.TileType.CAMP:
-                camp = tile["camp"]
-                monsters = build_camp_monsters(camp["class"], camp["level"])
-            else:
-                monsters = draw_monsters(
-                    floor_index, len(party), tile["monster_formula"]
-                )
+        # 5. противники уже собраны в resolve_tile (tile["monsters"])
 
         # 6. выбор действия ботом
         if len(available) == 1:
             action = available[0]
         else:
-            action = bot_decide(available, party, floor_state, profile, monsters)
+            action = bot_decide(available, party, floor_state, profile, tile.get("monsters"))
 
         # 7. обработка действия
         combat_log = None
@@ -1078,26 +1281,42 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             else:
                 # побег не удался - начинаем бой
                 fight = True
-        # 7.4. ветка SKIP + EVENT
-        elif action == data.Action.SKIP and tile["type"] == data.TileType.EVENT \
-                and tile.get("event") is not None and not tile["visited"]:
+        # 7.4. событие
+        elif action == data.Action.EVENT:
             tile["visited"] = True
-            res = resolve_event(tile, party, floor_state)
-            
-            combat_log = res["combat_log"]   # события не бой
+            event_log = apply_event(tile["event_result"], party, floor_state)
             event_snapshot = {
                 "id": tile["event"].get("id"),
                 "name": tile["event"].get("name"),
-                "log": res["event_log"],
+                "log": event_log,
             }
+        # 7.5. сокровищница
+        elif action == data.Action.TREASURE:
+            tile["visited"] = True
+            tr = tile["treasure"]
+            leader = party[0] if party else None
+            if tr["kind"] == "mimic":
+                if leader:
+                    leader["gold"] = max(0, leader["gold"] - 1)
+            elif tr["kind"] == "gold":
+                if leader:
+                    leader["gold"] += tr["amount"]
+            elif tr["kind"] == "equipment":
+                if leader:
+                    leader["inventory"].append(tr["code"])
+                    if "gold" in tr:
+                        leader["gold"] += tr["gold"]
+            tile["treasure"]["log"] = [
+                {"event": "treasure", "kind": tr["kind"]}
+            ]
         
         # 8. единая точка вызова run_combat
         if fight:
-            combat_log = run_combat(party, monsters)
+            combat_log = run_combat(party, tile["monsters"])
             if combat_log["result"] == "win":
                 tile["visited"] = True
+                tile["monsters"] = []
             if combat_log["result"] == "stuck":
-                # сигнал ошибки симуляции -- прерываем партию
                 return finalize_game(log, game_world, floor_state, floor_index, "stuck")
             
         # 9. запись шага в лог
@@ -1116,6 +1335,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             "flee_roll": flee_roll,
             "camp": camp_snapshot,
             "event": event_snapshot,
+            "treasure": tile.get("treasure") if action == data.Action.TREASURE else None, 
             "party": [snapshot_boiets(b) for b in party],
         })
         step_num += 1

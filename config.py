@@ -2,7 +2,7 @@
 import os
 
 # Версия проекта (см. README.md, раздел «Версионирование»)
-PROJECT_VERSION = "0.5.0"
+PROJECT_VERSION = "0.5.1"
 DEFAULT_SEED = None  # None = случайный; число = фиксированный
 
 # Путь сохранения логов

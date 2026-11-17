@@ -488,6 +488,28 @@ class GamePlayerApp:
                     )
                 elif kind == "effect_hung":
                     lines.append(f"  длительный эффект: {ev.get('turns')} хода")
+                elif kind == "loot":
+                    cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
+                    before = ", ".join(f"({c})" for c in ev.get("before", [])) or "—"
+                    after = ", ".join(f"({c})" for c in ev.get("after", [])) or "—"
+                    lines.append(f"  инвентарь ({cls}): {before} → {after}")
+                elif kind == "equip":
+                    cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
+                    parts = []
+                    if "weapon" in ev:
+                        w = ev["weapon"]
+                        b = f"({w['before']})" if w["before"] else "—"
+                        a = f"({w['after']})" if w["after"] else "—"
+                        parts.append(f"оружие: {b} → {a}")
+                    if "armor" in ev:
+                        a = ev["armor"]
+                        b = f"({a['before']})" if a["before"] else "—"
+                        af = f"({a['after']})" if a["after"] else "—"
+                        parts.append(f"броня: {b} → {af}")
+                    lines.append(f"  экипировка ({cls}): " + ", ".join(parts))
+                elif kind == "gold":
+                    cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
+                    lines.append(f"  золото ({cls}): {ev.get('before')} → {ev.get('after')}")
                 else:
                     lines.append(f"  {ev}")
             lines.append("")
@@ -559,7 +581,24 @@ class GamePlayerApp:
                         lines.append(f"    {kind}: {e}")
             else:
                 lines.append("  (без эффектов)")
-
+        
+        # Сокровищница
+        treasure = step.get("treasure")
+        if treasure:
+            lines.append("")
+            lines.append("Сокровищница:")
+            kind = treasure.get("kind")
+            if kind == "gold":
+                lines.append(f"  золото: +{treasure.get('amount')}")
+            elif kind == "equipment":
+                code = treasure.get("code")
+                name = equipment_name(code)
+                lines.append(f"  предмет: ({code}) {name}")
+                if "gold" in treasure:
+                    lines.append(f"  золото: +{treasure.get('gold')}")
+            elif kind == "mimic":
+                lines.append("  мимик: -1 золото лидеру (заглушка до 5.2)")
+       
         # Бой
         combat = step.get("combat")
         if combat:

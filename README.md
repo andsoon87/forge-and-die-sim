@@ -21,8 +21,8 @@
 |------|------------|
 | `RULES.md` | Правила игры (источник истины) |
 | `config.py` | Константы проекта (`PROJECT_VERSION`, лимиты, пути, дефолты) |
-| `data.py` | Игровые данные: классы, стартовое снаряжение (`STARTING_EQUIPMENT`), предметы (`EQUIPMENT`), монстры, тайлы, действия, таблицы лагерей, 20 карт событий. **Только читается** |
-| `simulator.py` | Движок: ходьба, бой, найм, события, level-up, снаряжение (`recalc_stats`), побег, запись лога партии |
+| `data.py` | Игровые данные: классы, стартовое снаряжение (`STARTING_EQUIPMENT`), предметы (`EQUIPMENT`), таблица качества (`EQUIPMENT_QUALITY_TABLE`), монстры, тайлы, действия, таблицы лагерей, 20 карт событий. **Только читается** |
+| `simulator.py` | Движок: ходьба, бой, найм, события, сокровищницы, level-up, снаряжение (`recalc_stats`, `bot_distribute`), побег, запись лога партии |
 | `run_player.py` | Tkinter-обозреватель прогона: таблица партий, сводка, гистограммы, TSV |
 | `game_player.py` | Tkinter-плеер одной партии: карта этажей, таблица шагов, свойства, график |
 | `combat_player.py` | Tkinter-плеер одного боя: бойцы / раунды / противники, действия раунда |
@@ -53,23 +53,30 @@
 `check_level_up`). `check_level_up` лечит на чистую классовую дельту
 (`base_hp[new] − base_hp[old]`), клэмп `hp` — в `recalc_stats`.
 
+**Колоды снаряжения.** В начале партии создаются 4 колоды по качеству
+(`U`/`R`/`V`/`L`) из `data.EQUIPMENT`, каждая перемешана. Выдача в
+сокровищнице тянет из колоды нужного качества (`EQUIPMENT_QUALITY_TABLE`,
+§6.2); если колода пуста — компенсация золотом (§6.2). Выбывшие предметы
+(смерть, обрезка, остаток раздачи) собираются в `trash` в `free_phase` и
+возвращаются в колоды через `collect_trash` (вставка в случайное место,
+без перемешивания).
+
+**Цены снаряжения.** `price` в `data.EQUIPMENT` взяты из RULES.md §10 и на
+этапе 5.1 используются только для выбора бота (`rusher` экипирует самое
+дорогое W/S) и отсева «мусора» (`price: 0`). Абсолютные значения в §10
+прикидочные и не коррелируют строго с ценностью предмета — пересмотр цен
+запланирован на этап балансировки (монте-карло), после завершения механик.
+
 **`resolve_tile` предлагает, `bot_*` решают.** `resolve_tile(position, floor_state, party) -> list[Action]` — только варианты. `bot_move` — направление, `bot_decide` — выбор `Action`. Не смешивать.
 
-**События.** 20 карт в `data.EVENTS`, колода на этаж (`floor_state["events_deck"]`, без повторов).
-`resolve_tile` тянет карту в `tile["event"]`, применение — в `play_one_game` через
-`resolve_event` → `apply_event`. Правило события: `{"select", "condition", "effects"}`.
-`select` — `{"all": True}` / `{"random": True}` / `{"max": field}`; `condition` — дерево
-(`{op: (left, right)}`, `{"d6": (lo, hi)}`, `{"and"/"or"/"not": ...}`); `effects` — объект
-(`gold`/`hp`/`xp`/`turns`/`monster`/`guide`). Длительные эффекты (`turns`) — в
-`floor_state["active_effects"]`, привязаны к бойцу (`target`), тикают в `free_phase`
-(до `cleanup_dead`). Бой из события — через `monster`-эффект (`(pool, index)`).
+**События.** 20 карт в `data.EVENTS`, колода на этаж (`floor_state["events_deck"]`, без повторов). `resolve_tile` тянет карту в `tile["event"]`, проигрывает правила (`play_event_rules`, d6 — здесь), фиксирует результат в `tile["event_result"]` и собирает монстров в `tile["monsters"]`. Применение — в `play_one_game` через `apply_event` (детерминированно, без повторных бросков). Правило события: `{"select", "condition", "effects"}`. `select` — `{"all": True}` / `{"random": True}` / `{"max": field}`; `condition` — дерево (`{op: (left, right)}`, `{"d6": (lo, hi)}`, `{"and"/"or"/"not": ...}`); `effects` — объект (`gold`/`hp`/`xp`/`turns`/`monster`/`guide`). Длительные эффекты (`turns`) — в `floor_state["active_effects"]`, привязаны к бойцу (`target`), тикают в `free_phase` (до `cleanup_dead`). Бой из события — через `monster`-эффект (`(pool, index)`; монстры собираются в `resolve_tile`, бой — `Action.FIGHT`).
 
 **Последовательность хода:**
-1. `free_phase` — тик `active_effects`; перераспределение добра (0.5.0 — заглушка); чистка трупов; level-up; `recalc_stats`. Если команда вымерла — `dead`.
+1. `free_phase` — тик `active_effects`; `bot_distribute` (перераспределение снаряжения и золота, трупы — источник); `trim_inventories` (обрезка до 6); чистка трупов; level-up; `recalc_stats`; `collect_trash` (возврат выбывших предметов в колоды). Если команда вымерла — `dead`.
 2. `bot_move` — 1 / -1.
 3. `resolve_tile` — тянет тайл при необходимости; для лагеря делает 3 броска и пишет в `tile["camp"]`.
 4. Смена позиции, `floor_steps += 1`.
-5. Если доступен `FIGHT` — `draw_monsters` или `build_camp_monsters`.
+5. Монстры собраны в `resolve_tile` (в `tile["monsters"]`); бой — через `Action.FIGHT`.
 6. `bot_decide` (если вариантов > 1).
 7. Обработка `Action` (`HIRE` / `FIGHT` / `FLEE` / `FORGE` / `SKIP`).
 8. Запись шага в лог.

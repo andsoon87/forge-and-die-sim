@@ -271,14 +271,18 @@ class Action(IntEnum):
     FIGHT = 2
     FLEE = 3
     HIRE = 4
-    
+    EVENT = 5
+    TREASURE = 6
+
 ACTION_NAMES = {
-    Action.SKIP:  "Пропуск",
-    Action.FORGE: "Переход на этаж",
-    Action.FIGHT: "Бой",
-    Action.FLEE:  "Побег",
-    Action.HIRE:  "Найм",
-}    
+    Action.SKIP:    "Пропуск",
+    Action.FORGE:   "Переход на этаж",
+    Action.FIGHT:   "Бой",
+    Action.FLEE:    "Побег",
+    Action.HIRE:    "Найм",
+    Action.EVENT:   "Событие",
+    Action.TREASURE:"Сокровище",
+}   
 
 # ============================================================
 # ЛАГЕРЯ: таблицы бросков (RULES.md §5)
@@ -302,6 +306,20 @@ CAMP_ENEMY_MAX = {1: 1, 2: 2, 3: 3, 4: 4}
 CAMP_NEUTRAL_MAX = {1: 3, 2: 4, 3: 5, 4: 6}
 
 # ============================================================
+# Качество снаряжения в сокровищнице (RULES.md §6.2)
+# ============================================================
+# EQUIPMENT_QUALITY_TABLE[d6-1][floor_index] -- качество ("U"/"R"/"V"/"L").
+# Строки -- d6 1..6, столбцы -- этажи 1..4 (floor_index 0..3).
+EQUIPMENT_QUALITY_TABLE = [
+    ["U", "U", "U", "U"],  # d6=1
+    ["U", "U", "U", "U"],  # d6=2
+    ["U", "U", "U", "R"],  # d6=3
+    ["U", "U", "R", "R"],  # d6=4
+    ["U", "R", "R", "V"],  # d6=5
+    ["U", "R", "V", "L"],  # d6=6
+]
+
+# ============================================================
 # Снаряжение
 # ============================================================
 # Формат записи:
@@ -314,10 +332,51 @@ CAMP_NEUTRAL_MAX = {1: 3, 2: 4, 3: 5, 4: 6}
 # В 0.5.0 -- только 4 стартовых предмета классов.
 
 EQUIPMENT = [
-    {"code": "UW01", "name": "Ржавый меч",      "class": None,      "bonus": {"at": 1}, "price": 2},
-    {"code": "US01", "name": "Кожаный доспех",  "class": None,      "bonus": {"df": 1}, "price": 3},
-    {"code": "US03", "name": "Мантия ученика",  "class": "mage",    "bonus": {"df": 1}, "price": 2},
-    {"code": "UA03", "name": "Святой символ",   "class": "priest",  "bonus": {"df": 1}, "price": 2},
+    # --- обычные (U), §10.1 ---
+    {"code": "UW01", "name": "Ржавый меч",       "class": None,     "bonus": {"at": 1}, "price": 2},
+    {"code": "UW02", "name": "Короткий меч",     "class": None,     "bonus": {"at": 2}, "price": 4},
+    {"code": "US01", "name": "Кожаный доспех",   "class": None,     "bonus": {"df": 1}, "price": 3},
+    {"code": "US02", "name": "Кольчуга",         "class": None,     "bonus": {"df": 2}, "price": 5},
+    {"code": "US03", "name": "Мантия ученика",   "class": "mage",   "bonus": {"df": 1}, "price": 2},
+    {"code": "UA01", "name": "Кольцо силы",      "class": None,     "bonus": {"hp": 2}, "price": 3},
+    {"code": "UA02", "name": "Амулет удачи",     "class": None,     "bonus": {}, "price": 0},           # пропало: +1 к сокровищам
+    {"code": "UA03", "name": "Святой символ",    "class": "priest", "bonus": {"df": 1}, "price": 2},
+
+    # --- редкие (R), §10.2 ---
+    {"code": "RW01", "name": "Боевой топор",     "class": None,     "bonus": {"at": 4, "df": -1}, "price": 5},
+    {"code": "RW02", "name": "Копьё",            "class": None,     "bonus": {"at": 1}, "price": 2},     # пропало: +1 инициатива, была цена 4
+    {"code": "RW03", "name": "Меч героя",        "class": "warrior","bonus": {"at": 5}, "price": 8},
+    {"code": "RW04", "name": "Составной лук",    "class": "hunter", "bonus": {"at": 4}, "price": 5},     # пропало: +1 к сокровищам, была цена 7
+    {"code": "RS01", "name": "Щит",              "class": None,     "bonus": {"df": 1, "hp": 1}, "price": 4},
+    {"code": "RS02", "name": "Тяжёлый доспех",   "class": None,     "bonus": {"df": 3}, "price": 9},     # пропало: -1 инициатива, была цена 7
+    {"code": "RS03", "name": "Башенный щит",     "class": "warrior","bonus": {"df": 2, "hp": 2}, "price": 7},
+    {"code": "RS04", "name": "Плащ следопыта",   "class": "hunter", "bonus": {"df": 1, "hp": 1}, "price": 4},  # пропало: +1 инициатива, была цена 6
+    {"code": "RS05", "name": "Святая броня",     "class": "priest", "bonus": {"df": 1, "hp": 1}, "price": 6},
+    {"code": "RA01", "name": "Сапоги скорости",  "class": None,     "bonus": {}, "price": 0},           # пропало: +1 инициатива
+    {"code": "RA02", "name": "Сумка алхимика",   "class": None,     "bonus": {}, "price": 0},           # пропало: +1 к событиям
+
+    # --- волшебные (V), §10.3 ---
+    {"code": "VW01", "name": "Длинный лук",      "class": None,     "bonus": {"at": 1}, "price": 2},     # пропало: +1 к сокровищам, была цена 5
+    {"code": "VW02", "name": "Кинжал",           "class": None,     "bonus": {"at": 1}, "price": 2},     # пропало: первая атака игнорирует защиту, была цена 6
+    {"code": "VW03", "name": "Посох пламени",    "class": "mage",   "bonus": {"at": 5}, "price": 8},
+    {"code": "VW04", "name": "Булава света",     "class": "priest", "bonus": {"at": 6, "hp": 4}, "price": 8},
+    {"code": "VS01", "name": "Плащ странника",   "class": None,     "bonus": {"df": 1}, "price": 3},     # пропало: +1 к событиям, была цена 4
+    {"code": "VS02", "name": "Шлем",             "class": None,     "bonus": {"df": 1}, "price": 3},     # пропало: иммунитет к первой атаке (раз за бой), была цена 5
+    {"code": "VS03", "name": "Пояс силы",        "class": "warrior","bonus": {"at": 1, "hp": 1}, "price": 5},
+    {"code": "VS04", "name": "Мантия архимага",  "class": "mage",   "bonus": {"df": 3, "hp": 2}, "price": 6},
+    {"code": "VA01", "name": "Талисман защиты",  "class": None,     "bonus": {"df": 1}, "price": 3},
+    {"code": "VA02", "name": "Медальон удачи",   "class": None,     "bonus": {}, "price": 0},           # пропало: +1 к сокровищам, +1 к событиям
+    {"code": "VA03", "name": "Глаз ястреба",     "class": "hunter", "bonus": {"at": 3}, "price": 4},     # пропало: +1 к сокровищам, была цена 6
+
+    # --- легендарные (L), §10.4 ---
+    {"code": "LW01", "name": "Клинок зари",      "class": None,     "bonus": {"at": 6, "df": 1}, "price": 8},  # пропало: первая атака в бою игнорирует защиту, была цена 10
+    {"code": "LW02", "name": "Молот грома",      "class": None,     "bonus": {"at": 7, "df": -1}, "price": 8}, # пропало: +2 урона при попадании, была цена 10
+    {"code": "LS01", "name": "Броня предков",    "class": None,     "bonus": {"df": 4, "hp": 3}, "price": 8},  # пропало: иммунитет к первой атаке (раз за бой), была цена 10
+    {"code": "LS02", "name": "Мифриловая кольчуга","class": None,   "bonus": {"df": 3, "hp": 2}, "price": 7},  # пропало: -1 к получаемому урону от огня, была цена 10
+    {"code": "LA01", "name": "Сердце горы",      "class": None,     "bonus": {"hp": 4, "df": 1}, "price": 5},  # пропало: +2 к одному броску d6 в сокровищнице (раз за визит), была цена 10
+    {"code": "LA02", "name": "Печать руны",      "class": None,     "bonus": {"at": 2, "df": 2}, "price": 6},  # пропало: +1 к золоту за бой, была цена 10
+    {"code": "LA03", "name": "Кристалл маны",    "class": "mage",   "bonus": {"at": 3}, "price": 4},     # пропало: +1 использование «Искры», была цена 10
+    {"code": "LA04", "name": "Символ веры",      "class": "priest", "bonus": {}, "price": 0},           # пропало: +1 использование «Молитвы»
 ]
 
 # ============================================================

@@ -86,6 +86,12 @@ def action_name(code: int) -> str:
 def result_name(result: str) -> str:
     return {"win": "победа", "dead": "погибли", "stuck": "застряли"}.get(result, result)
 
+def equipment_name(code: str) -> str:
+    """Название предмета по коду (из data.EQUIPMENT). '?' если кода нет."""
+    for item in data.EQUIPMENT:
+        if item["code"] == code:
+            return item["name"]
+    return "?"
 
 # ============================================================
 # Цвета типов тайлов (презентация)
@@ -443,10 +449,18 @@ class GamePlayerApp:
             for b in party:
                 cls = data.CLASS_NAMES.get(b["class"], b["class"])
                 lines.append(
-                    f"  {cls} ур.{b['level']}, "
+                    f"  {cls}, XP {b.get('xp', 0)}, ур.{b['level']}, "
                     f"HP {b['hp']}/{b['max_hp']}, "
-                    f"XP {b['xp']}, золото {b['gold']}"
+                    f"AT {b.get('at', '?')}, DF {b.get('df', '?')}"
                 )
+                lines.append("  Инвентарь:")
+                lines.append(f"  Золото {b.get('gold', 0)}")
+                inventory = b.get("inventory", [])
+                equipped = {b.get("equipped_weapon"), b.get("equipped_armor")}
+                for code in inventory:
+                    name = equipment_name(code)
+                    mark = ", экип." if code in equipped else ""
+                    lines.append(f"  ({code}) {name}{mark}")
             lines.append("")
 
         # События в начале хода

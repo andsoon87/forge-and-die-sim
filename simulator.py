@@ -44,30 +44,96 @@ def snapshot_boiets(boiets: dict) -> dict:
         "level": boiets["level"],
         "hp": boiets["hp"],
         "max_hp": boiets["max_hp"],
+        "at": boiets["at"],
+        "df": boiets["df"],
         "xp": boiets["xp"],
         "gold": boiets["gold"],
+        "inventory": list(boiets["inventory"]),
+        "equipped_weapon": boiets["equipped_weapon"],
+        "equipped_armor": boiets["equipped_armor"],
     }
+
+# ============================================================
+# Снаряжение: доступ и пересчёт характеристик
+# ============================================================
+def get_equipment(code: str) -> dict:
+    """Возвращает запись предмета из data.EQUIPMENT по коду.
+
+    KeyError, если кода нет -- лучше упасть громко, чем молча.
+    """
+    for item in data.EQUIPMENT:
+        if item["code"] == code:
+            return item
+    raise KeyError(f"Неизвестный код снаряжения: {code!r}")
+
+def recalc_stats(boiets: dict) -> None:
+    """Пересчитывает at/df/max_hp бойца с учётом снаряжения.
+
+    База -- data.CLASSES[class][level-1].
+    Бонусы: equipped_weapon + equipped_armor + все аксессуары (slot=="A")
+    из inventory. Неэкипированные W/S в inventory бонусов не дают.
+    hp клэмпится вниз по новому max_hp (не лечит).
+    """
+    base = data.CLASSES[boiets["class"]][boiets["level"] - 1]
+    at = base["at"]
+    df = base["df"]
+    max_hp = base["hp"]
+
+    codes = []
+    if boiets.get("equipped_weapon"):
+        codes.append(boiets["equipped_weapon"])
+    if boiets.get("equipped_armor"):
+        codes.append(boiets["equipped_armor"])
+    for code in boiets["inventory"]:
+        item = get_equipment(code)
+        if code not in codes and item["code"][1] == "A":  # slot "A" -- аксессуар
+            codes.append(code)
+
+    for code in codes:
+        bonus = get_equipment(code)["bonus"]
+        at += bonus.get("at", 0)
+        df += bonus.get("df", 0)
+        max_hp += bonus.get("hp", 0)
+
+    boiets["at"] = at
+    boiets["df"] = df
+    boiets["max_hp"] = max_hp
+    if boiets["hp"] > max_hp:
+        boiets["hp"] = max_hp
 
 # ============================================================
 # Инициализация
 # ============================================================
 def create_boiets(class_name: str, level: int = 1) -> dict:
-    """Создаёт бойца указанного уровня (по умолчанию 1-го)."""
+    """Создаёт бойца указанного уровня (по умолчанию 1-го).
+       Стартовый предмет класса кладётся в inventory и (для W/S) экипируется.
+    """
     level_data = data.CLASSES[class_name][level - 1] # индекс 0 -- уровень 1
-    return {
+    boiets = {
         "class": class_name,
         "level": level,
-        "hp": level_data["hp"],
-        "max_hp": level_data["hp"],
-        "at": level_data["at"],
-        "df": level_data["df"],
+        "hp": level_data["hp"], # рабочее: recalc_stats только клэмпит
+        "max_hp": 0,            # заполнит recalc_stats
+        "at": 0,                # заполнит recalc_stats
+        "df": 0,                # заполнит recalc_stats
         "xp": 0,
         "gold": 10,
         "inventory": [],
+        "equipped_weapon": None,
+        "equipped_armor": None,
         "effects": [],
         "ability_uses": {},
     }
-
+    start_code = data.STARTING_EQUIPMENT.get(class_name)
+    if start_code:
+        boiets["inventory"].append(start_code)
+        slot = start_code[1]
+        if slot == "W":
+            boiets["equipped_weapon"] = start_code
+        elif slot == "S":
+            boiets["equipped_armor"] = start_code
+    recalc_stats(boiets)
+    return boiets
 
 def create_party(class_name: str) -> list:
     """Создаёт команду из одного бойца."""
@@ -401,13 +467,11 @@ def check_level_up(boiets: dict) -> list:
             break
         boiets["xp"] -= cost
         old_level = boiets["level"]
+        old_base_hp = table[old_level - 1]["hp"]
         boiets["level"] += 1
-        # пересчёт характеристик
-        delta_hp = next_level_data["hp"] - boiets["max_hp"]
-        boiets["max_hp"] = next_level_data["hp"]
-        boiets["hp"] = boiets["hp"] + delta_hp
-        boiets["at"] = next_level_data["at"]
-        boiets["df"] = next_level_data["df"]
+        # лечение -- чистая классовая дельта (без снаряжения);
+        # at/df/max_hp и клэмп hp -- в recalc_stats (free_phase)
+        boiets["hp"] += next_level_data["hp"] - old_base_hp
         events.append({
             "event": "level_up",
             "class": boiets["class"],
@@ -423,19 +487,30 @@ def free_phase(party: list, floor_state: dict) -> tuple:
     """Свободная фаза в начале хода.
 
     1. Тик active_effects (болезнь и т.п.) -- может добить бойцов.
+    2. Перераспределение снаряжения и золота между бойцами, включая погибших
+       (0.5.0 -- заглушка; трупы ещё в party; здесь же -- смена экипировки).
     2. Чистка party от трупов (hp<=0); если погибла вся команда -- (events, True).
-    3. Level-up всем живым бойцам.
-    Позже: эликсиры, «Святая аура», «Чутьё».
+    3. Повышение уровня (level-up) всем живым бойцам (hp += чистовая дельта класса).
+    4. recalc_stats всем живым: at/df/max_hp с учётом снаряжения + клэмп hp.
     Возвращает (events, wiped).
     """
     events = []
+    # 1. тик активных эффектов
     events.extend(tick_active_effects(party, floor_state))
+    # 2. перераспределение снаряжения и золота -- заглушка 0.5.0
+    #    (бот видит hp==0, раскидывает inventory/gold живым;
+    #     остаток погребается вместе с трупом на шаге 3)
+    # 3. чистка от трупов
     dead_events, wiped = cleanup_dead(party, floor_state)
     events.extend(dead_events)
     if wiped:
         return events, True
+    # 4. повышение уровня
     for b in party:
         events.extend(check_level_up(b))
+    # 5. пересчёт характеристик
+    for b in party:
+        recalc_stats(b)
     return events, False
 
 # ============================================================
@@ -489,18 +564,18 @@ def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
 def build_camp_monsters(class_name: str, level: int) -> list:
     """Создаёт боевой экземпляр обитателя лагеря для run_combat.
 
-    Обитатель лагеря -- боец указанного класса и уровня. Статы берутся
-    из data.CLASSES (стартовое снаряжение появится позже и будет учтено
-    здесь же, в at/df/hp; source от этого не меняется).
+    Обитатель лагеря -- боец указанного класса и уровня со стартовым
+    предметом класса. Статы (at/df/max_hp) считаются через recalc_stats
+    на временном экземпляре -- чтобы не дублировать логику бонусов.
     Награда: XP = уровню, золото = 10.
     """
-    src = data.CLASSES[class_name][level - 1]
+    fighter = create_boiets(class_name, level)
     return [{
         "source": {"type": "camp", "class": class_name, "level": level},
-        "hp": src["hp"],
-        "max_hp": src["hp"],
-        "at": src["at"],
-        "df": src["df"],
+        "hp": fighter["hp"],
+        "max_hp": fighter["max_hp"],
+        "at": fighter["at"],
+        "df": fighter["df"],
         "xp": level,
         "gd": 10,
     }]

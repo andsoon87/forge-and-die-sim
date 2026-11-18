@@ -35,6 +35,13 @@ def opponent_name(source: dict) -> str:
     if t == "camp":
         cls = data.CLASS_NAMES.get(source["class"], source["class"])
         return f"{cls} ур.{source['level']}"
+    if t == "mimic":
+        floor = source.get("floor", 0)
+        try:
+            name = data.MIMICS[floor]["name"]
+        except (IndexError, KeyError):
+            name = "?"
+        return name
     return "?"
 
 def opponent_stats(source: dict) -> dict:

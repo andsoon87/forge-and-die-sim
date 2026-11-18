@@ -273,6 +273,7 @@ class Action(IntEnum):
     HIRE = 4
     EVENT = 5
     TREASURE = 6
+    TRADE = 7
 
 ACTION_NAMES = {
     Action.SKIP:    "Пропуск",
@@ -282,6 +283,7 @@ ACTION_NAMES = {
     Action.HIRE:    "Найм",
     Action.EVENT:   "Событие",
     Action.TREASURE:"Сокровище",
+    Action.TRADE:   "Торговля",
 }   
 
 # ============================================================

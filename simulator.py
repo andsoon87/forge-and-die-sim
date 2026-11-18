@@ -53,6 +53,19 @@ def snapshot_boiets(boiets: dict) -> dict:
         "equipped_armor": boiets["equipped_armor"],
     }
 
+def grant_item(boiets: dict, code: str, equipment_decks: dict) -> bool:
+    """Выдаёт предмет бойцу: убирает из колоды, кладёт в inventory.
+
+    Экипировку не трогает (её разрулит bot_distribute в free_phase).
+    Возвращает True, если карточка была в колоде и выдана; False -- если нет.
+    """
+    deck = equipment_decks[code[0]]
+    if code not in deck:
+        return False
+    deck.remove(code)
+    boiets["inventory"].append(code)
+    return True
+
 # ============================================================
 # Снаряжение: доступ и пересчёт характеристик
 # ============================================================
@@ -105,17 +118,19 @@ def recalc_stats(boiets: dict) -> None:
 # Инициализация
 # ============================================================
 def create_boiets(class_name: str, level: int = 1) -> dict:
-    """Создаёт бойца указанного уровня (по умолчанию 1-го).
-       Стартовый предмет класса кладётся в inventory и (для W/S) экипируется.
+    """Создаёт голого бойца указанного уровня (по умолчанию 1-го).
+
+    Без стартового предмета: выдача -- отдельно, через grant_item.
+    at/df/max_hp -- заглушки, заполняются recalc_stats ниже.
     """
-    level_data = data.CLASSES[class_name][level - 1] # индекс 0 -- уровень 1
+    level_data = data.CLASSES[class_name][level - 1]  # индекс 0 -- уровень 1
     boiets = {
         "class": class_name,
         "level": level,
-        "hp": level_data["hp"], # рабочее: recalc_stats только клэмпит
-        "max_hp": 0,            # заполнит recalc_stats
-        "at": 0,                # заполнит recalc_stats
-        "df": 0,                # заполнит recalc_stats
+        "hp": level_data["hp"],
+        "max_hp": 0,                 # заполнит recalc_stats
+        "at": 0,                     # заполнит recalc_stats
+        "df": 0,                     # заполнит recalc_stats
         "xp": 0,
         "gold": 10,
         "inventory": [],
@@ -124,20 +139,21 @@ def create_boiets(class_name: str, level: int = 1) -> dict:
         "effects": [],
         "ability_uses": {},
     }
-    start_code = data.STARTING_EQUIPMENT.get(class_name)
-    if start_code:
-        boiets["inventory"].append(start_code)
-        slot = start_code[1]
-        if slot == "W":
-            boiets["equipped_weapon"] = start_code
-        elif slot == "S":
-            boiets["equipped_armor"] = start_code
     recalc_stats(boiets)
     return boiets
 
-def create_party(class_name: str) -> list:
-    """Создаёт команду из одного бойца."""
-    return [create_boiets(class_name)]
+def create_party(class_name: str, equipment_decks: dict) -> list:
+    """Создаёт команду из одного бойца.
+
+    Стартовый предмет класса выдаётся через grant_item (из колоды).
+    Если карточки в колоде нет -- боец без предмета (на старте колоды полные,
+    так что это не должно случиться).
+    """
+    b = create_boiets(class_name)
+    start_code = data.STARTING_EQUIPMENT.get(class_name)
+    if start_code:
+        grant_item(b, start_code, equipment_decks)
+    return [b]
 
 
 def create_floor_state(floor_index: int) -> dict:
@@ -696,12 +712,19 @@ def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
 def build_camp_monsters(class_name: str, level: int) -> list:
     """Создаёт боевой экземпляр обитателя лагеря для run_combat.
 
-    Обитатель лагеря -- боец указанного класса и уровня со стартовым
-    предметом класса. Статы (at/df/max_hp) считаются через recalc_stats
-    на временном экземпляре -- чтобы не дублировать логику бонусов.
+    Обитатель лагеря -- боец указанного класса и уровня. Инвентаря у него
+    нет (временный экземпляр), но бонусы стартового предмета класса
+    учитываются в at/df/max_hp. hp = max_hp (свежий).
     Награда: XP = уровню, золото = 10.
     """
-    fighter = create_boiets(class_name, level)
+    fighter = create_boiets(class_name, level)          # голый
+    start_code = data.STARTING_EQUIPMENT.get(class_name)
+    if start_code:
+        bonus = get_equipment(start_code)["bonus"]
+        fighter["at"] += bonus.get("at", 0)
+        fighter["df"] += bonus.get("df", 0)
+        fighter["max_hp"] += bonus.get("hp", 0)
+        fighter["hp"] = fighter["max_hp"]
     return [{
         "source": {"type": "camp", "class": class_name, "level": level},
         "hp": fighter["hp"],
@@ -733,6 +756,23 @@ def build_event_monsters(specs: list) -> list:
             "xp": src["xp"], "gd": src["gd"],
         })
     return monsters
+
+def build_mimic(floor_index: int) -> list:
+    """Создаёт боевой экземпляр мимика (один, независимо от размера команды).
+
+    Статы -- из data.MIMICS[floor_index]. Награда -- xp/gd из той же записи.
+    source: {"type": "mimic", "floor": floor_index} -- для лога/плеера.
+    """
+    src = data.MIMICS[floor_index]
+    return [{
+        "source": {"type": "mimic", "floor": floor_index},
+        "hp": src["hp"],
+        "max_hp": src["hp"],
+        "at": src["at"],
+        "df": src["df"],
+        "xp": src["xp"],
+        "gd": src["gd"],
+    }]
 
 # ============================================================
 # Бой
@@ -1026,7 +1066,7 @@ def resolve_treasure(tile: dict, floor_state: dict, equipment_decks: dict) -> No
         tile["treasure"] = {"kind": "gold", "amount": [3, 6, 12, 24][fi],
                             "note": "deck_empty"}
         return
-    code = deck.pop(0)
+    code = random.choice(deck)          # выбрать, НЕ забирать (заберёт grant_item)
     if d6 == 6:
         tile["treasure"] = {"kind": "equipment", "code": code,
                             "gold": [3, 6, 12, 24][fi]}
@@ -1114,10 +1154,43 @@ def resolve_tile(position: int, floor_state: dict, party: list,
             return [data.Action.SKIP]
         if tile.get("treasure") is None:
             resolve_treasure(tile, floor_state, equipment_decks)
+        tr = tile["treasure"]
+        if tr["kind"] == "mimic":
+            # мимик -- бой; экземпляр собирается один раз
+            if tile.get("monsters") is None:
+                tile["monsters"] = build_mimic(floor_state["floor_index"])
+            return [data.Action.FIGHT, data.Action.FLEE]
         return [data.Action.TREASURE]
-    # торговец, старт -- пока только пропуск
+    # 3.6. торговец: доступен всегда (visited -- только для лога)
+    if tile["type"] == data.TileType.TRADER:
+        tile["visited"] = True
+        return [data.Action.TRADE]
+    # старт -- только пропуск
     return [data.Action.SKIP]
 
+def resolve_trade(party: list, deals: list) -> list:
+    """Применяет сделки на торговце.
+
+    Сделка (boiets_idx, code): у бойца удаляется code из inventory,
+    ему начисляется price золота. На будущее: если code -- эликсир (E),
+    сделка означает покупку (списать price, добавить в inventory) -- TODO.
+    Возвращает events для лога.
+    """
+    events = []
+    for idx, code in deals:
+        if idx >= len(party):
+            continue
+        b = party[idx]
+        price = get_equipment(code)["price"]
+        if code in b["inventory"]:
+            b["inventory"].remove(code)
+            b["gold"] += price
+            events.append({"event": "trade_sell", "class": b["class"],
+                           "code": code, "price": price})
+        else:
+            events.append({"event": "trade_miss", "class": b["class"],
+                           "code": code})
+    return events
 
 # ============================================================
 # Решения бота
@@ -1182,7 +1255,27 @@ def bot_decide(available: list, party: list, floor_state: dict, profile: str, mo
     # по умолчанию -- первый вариант
     return random.choice(available)
 
+def bot_trade(party: list, profile: str) -> list:
+    """Выбирает сделки на торговце: продажа неэкипированных W/S (price > 0).
 
+    Возвращает список (boiets_idx, code). Мусор (price == 0) не трогаем --
+    его срежет trim_inventories, а в сортировке он и так в конце.
+    На будущее: если code -- эликсир (E), сделка означает покупку (TODO).
+    """
+    deals = []
+    for idx, b in enumerate(party):
+        if b["hp"] <= 0:
+            continue
+        for code in b["inventory"]:
+            slot = code[1]
+            if slot not in ("W", "S"):
+                continue
+            if code == b["equipped_weapon"] or code == b["equipped_armor"]:
+                continue
+            if get_equipment(code)["price"] <= 0:
+                continue
+            deals.append((idx, code))
+    return deals
 
 # ============================================================
 # Завершение партии
@@ -1203,7 +1296,6 @@ def finalize_game(log: dict, game_world: list, floor_state: dict,
 def play_one_game(class_name: str, profile: str, seed: int) -> dict:
     """Одна партия. Возвращает журнал."""
     random.seed(seed)
-    party = create_party(class_name)
 
     # Колоды снаряжения по качеству (одна на игру).
     equipment_decks = {"U": [], "R": [], "V": [], "L": []}
@@ -1211,6 +1303,9 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         equipment_decks[item["code"][0]].append(item["code"])
     for q in equipment_decks:
         random.shuffle(equipment_decks[q])
+    
+    # создание команды
+    party = create_party(class_name, equipment_decks)
 
     floor_index = 0
     floor_state = create_floor_state(floor_index)
@@ -1256,13 +1351,19 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         flee_roll = None
         fight = False
         event_snapshot = None
+        trade_snapshot = None
         
         # 7.1. найм
         if action == data.Action.HIRE:
             # нанять обитателя лагеря (если класс ещё не в команде -- resolve_tile
             # уже это проверила, здесь просто добавляем)
             camp = tile["camp"]
-            new_b = create_boiets(camp["class"], camp["level"])
+            cls = camp["class"]
+            new_b = create_boiets(cls, camp["level"])
+            start_code = data.STARTING_EQUIPMENT.get(cls)
+            if start_code and not grant_item(new_b, start_code, equipment_decks):
+                # карточки нет в колоде -- компенсация золотом (price)
+                new_b["gold"] += get_equipment(start_code)["price"]
             party.append(new_b)
             tile["visited"] = True
         # 7.2. бой
@@ -1290,25 +1391,28 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
                 "name": tile["event"].get("name"),
                 "log": event_log,
             }
-        # 7.5. сокровищница
+        # 7.5. сокровищница (мимик сюда не доходит -- он уходит в FIGHT)
         elif action == data.Action.TREASURE:
             tile["visited"] = True
             tr = tile["treasure"]
             leader = party[0] if party else None
-            if tr["kind"] == "mimic":
-                if leader:
-                    leader["gold"] = max(0, leader["gold"] - 1)
-            elif tr["kind"] == "gold":
+            if tr["kind"] == "gold":
                 if leader:
                     leader["gold"] += tr["amount"]
             elif tr["kind"] == "equipment":
                 if leader:
-                    leader["inventory"].append(tr["code"])
+                    grant_item(leader, tr["code"], equipment_decks)  # remove + append
                     if "gold" in tr:
                         leader["gold"] += tr["gold"]
             tile["treasure"]["log"] = [
                 {"event": "treasure", "kind": tr["kind"]}
             ]
+        
+        # 7.6. торговец
+        elif action == data.Action.TRADE:
+            deals = bot_trade(party, profile)
+            trade_log = resolve_trade(party, deals)
+            trade_snapshot = {"deals": len(deals), "log": trade_log}
         
         # 8. единая точка вызова run_combat
         if fight:
@@ -1336,6 +1440,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
             "camp": camp_snapshot,
             "event": event_snapshot,
             "treasure": tile.get("treasure") if action == data.Action.TREASURE else None, 
+            "trade": trade_snapshot,
             "party": [snapshot_boiets(b) for b in party],
         })
         step_num += 1

@@ -597,8 +597,28 @@ class GamePlayerApp:
                 if "gold" in treasure:
                     lines.append(f"  золото: +{treasure.get('gold')}")
             elif kind == "mimic":
-                lines.append("  мимик: -1 золото лидеру (заглушка до 5.2)")
-       
+                lines.append("  мимик")
+        
+        # Торговец
+        trade = step.get("trade")
+        if trade:
+            lines.append("")
+            lines.append("Торговец:")
+            lines.append(f"  сделок: {trade.get('deals', 0)}")
+            for e in trade.get("log", []):
+                kind = e.get("event")
+                cls = data.CLASS_NAMES.get(e.get("class"), e.get("class"))
+                code = e.get("code")
+                if kind == "trade_sell":
+                    lines.append(
+                        f"  продано: ({code}) {equipment_name(code)} "
+                        f"за {e.get('price')} ({cls})"
+                    )
+                elif kind == "trade_miss":
+                    lines.append(f"  не найдено: ({code}) ({cls})")
+                else:
+                    lines.append(f"  {e}")
+        
         # Бой
         combat = step.get("combat")
         if combat:
@@ -625,6 +645,13 @@ class GamePlayerApp:
                     elif t == "camp":
                         cls = data.CLASS_NAMES.get(m["class"], m["class"])
                         names.append(f"{cls} ур.{m['level']}")
+                    elif t == "mimic":
+                        floor = m.get("floor", 0)
+                        try:
+                            name = data.MIMICS[floor]["name"]
+                        except (IndexError, KeyError):
+                            name = "?"
+                        names.append(name)
                     else:
                         names.append("?")
                 lines.append(f"    противники: {', '.join(names)}")

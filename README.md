@@ -26,6 +26,9 @@
 | `run_player.py` | Tkinter-обозреватель прогона: таблица партий, сводка, гистограммы, TSV |
 | `game_player.py` | Tkinter-плеер одной партии: карта этажей, таблица шагов, свойства, график |
 | `combat_player.py` | Tkinter-плеер одного боя: бойцы / раунды / противники, действия раунда |
+| `equipment.py` | Снаряжение: `get_equipment`, `recalc_stats` (в 5.3 — полный) |
+| `solvers.py` | `Solver`-интерфейс, `make_solver(kind, profile)`, заглушки `Human`/`NN` |
+| `bots.py` | `BotSolver` + `bot_move`/`bot_decide`/`bot_distribute`/`bot_trade` |
 
 Запуск плееров: `run_player` → `game_player` (двойной клик по партии) → `combat_player` (кнопка «Открыть бой»).
 
@@ -40,18 +43,13 @@
 - бойцы — в `party`;
 - противники — в боевых экземплярах (`draw_monsters` / `build_camp_monsters`).
 
+**Решатели (`Solver`).** Движок не знает, кто принимает решения: `play_one_game` получает готовый `solver` и зовёт `solver.move/decide/distribute/trade`. `make_solver(kind, profile)` — фабрика: `bot` → `BotSolver` (стили `rusher`/...), `human`/`nn` — заглушки (после 8.0). CLI: `--solver bot|human|nn`, `--profile ...`.
+
 **Логи — для плееров, не для чтения глазами.** В логах коды/ссылки (`tile_id`, `source` = `{type, pool, monster}` / `{type, class, level}`, `action` как int). Имена восстанавливаются из `data.py`. `combat_log` самодостаточен: не требует соседних шагов (в нём `party` на начало боя, `monsters`, `rounds` с `hp_start_round`/`initiative`/`actions`, финальный раунд-снимок, `result`, `xp_gained`/`gold_gained`).
 
 **`party` в шаге — после хода.** Трупы (`hp=0`) живут в `party` до начала следующего хода: чистка — в `free_phase` (`cleanup_dead`). «До боя» — из `combat_log["party"]` и `hp_start_round`; «до шага» — из предыдущего шага.
 
-**Снаряжение.** `data.EQUIPMENT` — список предметов; ссылка на предмет везде —
-строка `code` (`"UW01"`), имя резолвится из `data.py` по коду. У бойца:
-`inventory` (список кодов в порядке получения), `equipped_weapon`/`equipped_armor`
-(код или `None`). Бонусы дают только экипированные W/S и все аксессуары (`slot == "A"`)
-из `inventory`. `at`/`df`/`max_hp` — кэш в бойце, пересчитывается `recalc_stats`
-(база класса + снаряжение); триггеры — `create_boiets`, `free_phase` (после
-`check_level_up`). `check_level_up` лечит на чистую классовую дельту
-(`base_hp[new] − base_hp[old]`), клэмп `hp` — в `recalc_stats`.
+**Снаряжение.** `data.EQUIPMENT` — список предметов; ссылка на предмет везде — строка `code` (`"UW01"`), имя резолвится из `data.py` по коду. У бойца: `inventory` (список кодов в порядке получения), `equipped_weapon`/`equipped_armor` (код или `None`). Бонусы дают только экипированные W/S и все аксессуары (`slot == "A"`) из `inventory`. `at`/`df`/`max_hp` — кэш в бойце, пересчитывается `recalc_stats` (база класса + снаряжение); триггеры — `create_boiets`, `free_phase` (после `check_level_up`). `check_level_up` лечит на чистую классовую дельту (`base_hp[new] − base_hp[old]`), клэмп `hp` — в `recalc_stats`.
 
 **Колоды снаряжения.** В начале партии создаются 4 колоды по качеству
 (`U`/`R`/`V`/`L`) из `data.EQUIPMENT`, каждая перемешана. Выдача в
@@ -71,8 +69,16 @@
 
 **События.** 20 карт в `data.EVENTS`, колода на этаж (`floor_state["events_deck"]`, без повторов). `resolve_tile` тянет карту в `tile["event"]`, проигрывает правила (`play_event_rules`, d6 — здесь), фиксирует результат в `tile["event_result"]` и собирает монстров в `tile["monsters"]`. Применение — в `play_one_game` через `apply_event` (детерминированно, без повторных бросков). Правило события: `{"select", "condition", "effects"}`. `select` — `{"all": True}` / `{"random": True}` / `{"max": field}`; `condition` — дерево (`{op: (left, right)}`, `{"d6": (lo, hi)}`, `{"and"/"or"/"not": ...}`); `effects` — объект (`gold`/`hp`/`xp`/`turns`/`monster`/`guide`). Длительные эффекты (`turns`) — в `floor_state["active_effects"]`, привязаны к бойцу (`target`), тикают в `free_phase` (до `cleanup_dead`). Бой из события — через `monster`-эффект (`(pool, index)`; монстры собираются в `resolve_tile`, бой — `Action.FIGHT`).
 
+**Сокровищница, найм, торговец (5.2).** Мимик (d6=1 в сокровищнице) --
+бой: `resolve_tile` собирает `tile["monsters"]` через `build_mimic`, `Action.FIGHT`.
+Найм в лагере: стартовый предмет класса выдаётся через `grant_item`; если
+карточки уже нет в колоде -- боец нанимается без предмета, + `price` золотом.
+Торговец: `Action.TRADE` (доступен всегда), `bot_trade` выбирает неэкипированные
+W/S с `price > 0`, `resolve_trade` продаёт (удаляет предмет, начисляет `price`
+тому бойцу). Эликсиры (покупка) -- 5.3.
+
 **Последовательность хода:**
-1. `free_phase` — тик `active_effects`; `bot_distribute` (перераспределение снаряжения и золота, трупы — источник); `trim_inventories` (обрезка до 6); чистка трупов; level-up; `recalc_stats`; `collect_trash` (возврат выбывших предметов в колоды). Если команда вымерла — `dead`.
+1. `free_phase` — тик `active_effects`; `solver.distribute` (перераспределение снаряжения и золота, трупы — источник); `trim_inventories` (обрезка до 6); чистка трупов; level-up; `recalc_stats`; `collect_trash` (возврат выбывших предметов в колоды). Если команда вымерла — `dead`.
 2. `bot_move` — 1 / -1.
 3. `resolve_tile` — тянет тайл при необходимости; для лагеря делает 3 броска и пишет в `tile["camp"]`.
 4. Смена позиции, `floor_steps += 1`.
@@ -92,6 +98,7 @@
 
 ```bash
 # прогон N партий (seed для воспроизводимости)
+# --solver bot|human|nn --profile rusher
 python simulator.py --games 1000 --seed 1
 
 # обозреватель прогона; кнопка «Новый…» — запуск simulator.py из интерфейса

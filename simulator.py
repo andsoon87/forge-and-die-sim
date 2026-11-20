@@ -28,7 +28,8 @@ from datetime import datetime
 
 import config
 import data
-
+from equipment import get_equipment, recalc_stats
+from solvers import make_solver
 
 # ============================================================
 # Утилиты
@@ -65,54 +66,6 @@ def grant_item(boiets: dict, code: str, equipment_decks: dict) -> bool:
     deck.remove(code)
     boiets["inventory"].append(code)
     return True
-
-# ============================================================
-# Снаряжение: доступ и пересчёт характеристик
-# ============================================================
-def get_equipment(code: str) -> dict:
-    """Возвращает запись предмета из data.EQUIPMENT по коду.
-
-    KeyError, если кода нет -- лучше упасть громко, чем молча.
-    """
-    for item in data.EQUIPMENT:
-        if item["code"] == code:
-            return item
-    raise KeyError(f"Неизвестный код снаряжения: {code!r}")
-
-def recalc_stats(boiets: dict) -> None:
-    """Пересчитывает at/df/max_hp бойца с учётом снаряжения.
-
-    База -- data.CLASSES[class][level-1].
-    Бонусы: equipped_weapon + equipped_armor + все аксессуары (slot=="A")
-    из inventory. Неэкипированные W/S в inventory бонусов не дают.
-    hp клэмпится вниз по новому max_hp (не лечит).
-    """
-    base = data.CLASSES[boiets["class"]][boiets["level"] - 1]
-    at = base["at"]
-    df = base["df"]
-    max_hp = base["hp"]
-
-    codes = []
-    if boiets.get("equipped_weapon"):
-        codes.append(boiets["equipped_weapon"])
-    if boiets.get("equipped_armor"):
-        codes.append(boiets["equipped_armor"])
-    for code in boiets["inventory"]:
-        item = get_equipment(code)
-        if code not in codes and item["code"][1] == "A":  # slot "A" -- аксессуар
-            codes.append(code)
-
-    for code in codes:
-        bonus = get_equipment(code)["bonus"]
-        at += bonus.get("at", 0)
-        df += bonus.get("df", 0)
-        max_hp += bonus.get("hp", 0)
-
-    boiets["at"] = at
-    boiets["df"] = df
-    boiets["max_hp"] = max_hp
-    if boiets["hp"] > max_hp:
-        boiets["hp"] = max_hp
 
 # ============================================================
 # Инициализация
@@ -191,134 +144,6 @@ def create_floor_state(floor_index: int) -> dict:
 # ============================================================
 # Перераспределение снаряжения
 # ============================================================
-def _item_value(code: str) -> int:
-    """Ключ сортировки: W/S ценятся вдвое (приоритет экипировки)."""
-    item = get_equipment(code)
-    slot = code[1]
-    return item["price"] * 2 if slot in ("W", "S") else item["price"]
-
-
-def _fits_class(code: str, boiets: dict) -> bool:
-    """Подходит ли предмет бойцу по классу (None -- всем)."""
-    item = get_equipment(code)
-    return item["class"] is None or item["class"] == boiets["class"]
-
-
-def bot_distribute(party: list, profile: str) -> tuple:
-    """Перераспределяет снаряжение и золото между живыми бойцами.
-
-    Трупы -- источник (их inventory/gold идут в общий котёл), но не получатели.
-    Ценность для сортировки: price*2 для W/S, price для A.
-    Экипировка по кругу: первый подходящий (класс + свободный слот W/S).
-    Остаток -- по свободным местам (лимит 6).
-    Золото -- поровну живым, остаток лидеру (первый живой).
-
-    В лог пишутся только реальные изменения (before/after по каждому бойцу).
-    Возвращает (events, trash): trash -- предметы, не попавшие никому
-    (остаток pool), для возврата в колоды.
-    """
-    events = []
-    trash = []
-    alive = [b for b in party if b["hp"] > 0]
-    if not alive:
-        return events, trash
-
-    # Снимок "до" (по индексам в party; внутри функции party не меняется)
-    before = []
-    for b in party:
-        before.append({
-            "inventory": list(b["inventory"]),
-            "equipped_weapon": b["equipped_weapon"],
-            "equipped_armor": b["equipped_armor"],
-            "gold": b["gold"],
-        })
-
-    # 1. Сбор
-    pool = []
-    for b in party:
-        pool.extend(b["inventory"])
-        b["inventory"] = []
-        b["equipped_weapon"] = None
-        b["equipped_armor"] = None
-
-    # 2. Сортировка
-    pool.sort(key=lambda c: (_item_value(c), c), reverse=True)
-
-    # 3. Экипировка по кругу
-    while True:
-        taken_this_round = False
-        for b in alive:
-            for i, code in enumerate(pool):
-                if not _fits_class(code, b):
-                    continue
-                slot = code[1]
-                if slot == "W" and b["equipped_weapon"] is not None:
-                    continue
-                if slot == "S" and b["equipped_armor"] is not None:
-                    continue
-                pool.pop(i)
-                b["inventory"].append(code)
-                if slot == "W":
-                    b["equipped_weapon"] = code
-                elif slot == "S":
-                    b["equipped_armor"] = code
-                taken_this_round = True
-                break
-        if not taken_this_round:
-            break
-
-    # 4. Остаток -- по свободным местам (лимит 6), по кругу
-    if pool:
-        while pool:
-            moved = False
-            for b in alive:
-                if not pool:
-                    break
-                if len(b["inventory"]) < 6:
-                    b["inventory"].append(pool.pop(0))
-                    moved = True
-            if not moved:
-                break   # все инвентари полны -- остаток в trash
-
-    # Остаток pool -- в trash (возврат в колоды)
-    trash.extend(pool)
-
-    # 5. Золото
-    total_gold = sum(b["gold"] for b in party)
-    for b in party:
-        b["gold"] = 0
-    share = total_gold // len(alive)
-    remainder = total_gold - share * len(alive)
-    for b in alive:
-        b["gold"] = share
-    alive[0]["gold"] += remainder
-
-    # 6. Дифф "до/после" -- только реальные изменения, трупы пропускаем
-    for idx, b in enumerate(party):
-        if b["hp"] <= 0:
-            continue                          # труп: его добро ушло, видно у получателей
-        bef = before[idx]
-        # инвентарь
-        if bef["inventory"] != b["inventory"]:
-            events.append({"event": "loot", "class": b["class"],
-                           "before": bef["inventory"], "after": list(b["inventory"])})
-        # экипировка -- только изменившиеся поля
-        eq = {}
-        if bef["equipped_weapon"] != b["equipped_weapon"]:
-            eq["weapon"] = {"before": bef["equipped_weapon"],
-                            "after": b["equipped_weapon"]}
-        if bef["equipped_armor"] != b["equipped_armor"]:
-            eq["armor"] = {"before": bef["equipped_armor"],
-                           "after": b["equipped_armor"]}
-        if eq:
-            events.append({"event": "equip", "class": b["class"], **eq})
-        # золото
-        if bef["gold"] != b["gold"]:
-            events.append({"event": "gold", "class": b["class"],
-                           "before": bef["gold"], "after": b["gold"]})
-
-    return events, trash
-
 
 def trim_inventories(party: list) -> tuple:
     """Обрезает inventory до 6 у всех в party (живых и трупов).
@@ -623,7 +448,7 @@ def collect_trash(trash: list, equipment_decks: dict) -> None:
     trash.clear()
     
 # Свободная фаза
-def free_phase(party: list, floor_state: dict, profile: str,
+def free_phase(party: list, floor_state: dict, solver,
                equipment_decks: dict) -> tuple:
     """Свободная фаза в начале хода.
 
@@ -641,7 +466,7 @@ def free_phase(party: list, floor_state: dict, profile: str,
     # 1. тик активных эффектов
     events.extend(tick_active_effects(party, floor_state))
     # 2. перераспределение снаряжения и золота -- заглушка 0.5.0
-    ev, tr = bot_distribute(party, profile)
+    ev, tr = solver.distribute(party)
     events.extend(ev); trash.extend(tr)
     # 3. обрезка инвентарей
     ev, tr = trim_inventories(party)
@@ -1193,91 +1018,6 @@ def resolve_trade(party: list, deals: list) -> list:
     return events
 
 # ============================================================
-# Решения бота
-# ============================================================
-def bot_move(floor_state: dict, party: list, profile: str) -> int:
-    """Решает, куда шагнуть: 1 (вперёд) или -1 (назад).
-
-    Учитывает край линии и пустую колоду:
-      - position == 0                           → только 1;
-      - position == len(tiles)-1 и колода пуста → только -1 («стена» впереди);
-      - иначе -- по профилю.
-
-    Rusher: всегда 1, если может, иначе -1.
-    Неизвестный профиль: случайный выбор из допустимых.
-    """
-    position = floor_state["position"]
-    can_forward = not (
-        position == len(floor_state["tiles"]) - 1
-        and not floor_state["tiles_deck"]
-    )
-    can_back = position > 0
-
-    if not can_forward and not can_back:
-        # вырожденный случай: некуда идти (не должно случаться)
-        return 0
-
-    if profile == "rusher":
-        if can_forward:
-            return 1
-        return -1
-
-    # неизвестный профиль -- случайный выбор из допустимых
-    options = []
-    if can_forward:
-        options.append(1)
-    if can_back:
-        options.append(-1)
-    return random.choice(options)
-
-def bot_decide(available: list, party: list, floor_state: dict, profile: str, monsters: list) -> int:
-    """Выбирает одно Action из списка доступных по профилю.
-    available -- варианты на текущем тайле (len > 1; при len == 1 не вызывается).
-    monsters  -- противники, вытянутые до решения (None, если боя нет).
-
-    Rusher: HIRE > FORGE > FIGHT > SKIP > FLEE.
-    Неизвестный профиль: случайное действие из доступных.
-    """
-    if profile == "rusher":
-        if data.Action.HIRE in available:
-            return data.Action.HIRE
-        if data.Action.FORGE in available:
-            return data.Action.FORGE
-        if data.Action.FIGHT in available:
-            return data.Action.FIGHT
-        if data.Action.SKIP in available:
-            return data.Action.SKIP
-        if data.Action.FLEE in available:
-            return data.Action.FLEE
-        # страховка: не должно случаться, если available не пуст
-        return available[0]
-
-    # по умолчанию -- первый вариант
-    return random.choice(available)
-
-def bot_trade(party: list, profile: str) -> list:
-    """Выбирает сделки на торговце: продажа неэкипированных W/S (price > 0).
-
-    Возвращает список (boiets_idx, code). Мусор (price == 0) не трогаем --
-    его срежет trim_inventories, а в сортировке он и так в конце.
-    На будущее: если code -- эликсир (E), сделка означает покупку (TODO).
-    """
-    deals = []
-    for idx, b in enumerate(party):
-        if b["hp"] <= 0:
-            continue
-        for code in b["inventory"]:
-            slot = code[1]
-            if slot not in ("W", "S"):
-                continue
-            if code == b["equipped_weapon"] or code == b["equipped_armor"]:
-                continue
-            if get_equipment(code)["price"] <= 0:
-                continue
-            deals.append((idx, code))
-    return deals
-
-# ============================================================
 # Завершение партии
 # ============================================================
 def finalize_game(log: dict, game_world: list, floor_state: dict,
@@ -1293,7 +1033,7 @@ def finalize_game(log: dict, game_world: list, floor_state: dict,
 # ============================================================
 # Главный цикл партии
 # ============================================================
-def play_one_game(class_name: str, profile: str, seed: int) -> dict:
+def play_one_game(class_name: str, solver, seed: int) -> dict:
     """Одна партия. Возвращает журнал."""
     random.seed(seed)
 
@@ -1311,7 +1051,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
     floor_state = create_floor_state(floor_index)
     log = {
         "seed": seed,
-        "profile": profile,
+        "profile": getattr(solver, "profile", None),
         "class": class_name,
         "steps": [],
     }
@@ -1320,13 +1060,13 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
     step_num = 0
     while floor_index < 4:
         # 1. свободная фаза (чистка трупов + level-up)
-        free_events, wiped = free_phase(party, floor_state, profile, equipment_decks)
+        free_events, wiped = free_phase(party, floor_state, solver, equipment_decks)
         if wiped:
             # вся команда погибла -- партия окончена
             return finalize_game(log, game_world, floor_state, floor_index, "dead")
 
         # 2. решение о направлении перемещения
-        move = bot_move(floor_state, party, profile)
+        move = solver.move(floor_state, party)
         
         # 3. разрешение клетки (при необходимости тянет тайл)
         target_position = floor_state["position"] + move
@@ -1344,7 +1084,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         if len(available) == 1:
             action = available[0]
         else:
-            action = bot_decide(available, party, floor_state, profile, tile.get("monsters"))
+            action = solver.decide(available, party, floor_state, tile.get("monsters"))
 
         # 7. обработка действия
         combat_log = None
@@ -1410,7 +1150,7 @@ def play_one_game(class_name: str, profile: str, seed: int) -> dict:
         
         # 7.6. торговец
         elif action == data.Action.TRADE:
-            deals = bot_trade(party, profile)
+            deals = solver.trade(party)
             trade_log = resolve_trade(party, deals)
             trade_snapshot = {"deals": len(deals), "log": trade_log}
         
@@ -1486,8 +1226,9 @@ def print_progress(current: int, total: int, stats: dict, elapsed: float) -> Non
     print(f"\r{line}", end="", flush=True)
 
 
-def run_simulation(n_games: int, class_name: str, profile: str,
-                   seed_base: int = None, no_progress: bool = False) -> None:
+def run_simulation(n_games: int, class_name: str, solver_kind: str,
+                   profile: str, seed_base: int = None,
+                   no_progress: bool = False) -> None:
     """Прогоняет N партий, пишет логи, выводит статистику."""
     run_id = make_run_id()
     run_dir = os.path.join(config.LOGS_DIR, run_id)
@@ -1496,10 +1237,11 @@ def run_simulation(n_games: int, class_name: str, profile: str,
     started_at = datetime.now().isoformat()
     stats = {}
     start_time = time.time()
+    solver = make_solver(solver_kind, profile)
 
     for i in range(n_games):
         seed = (seed_base + i) if seed_base is not None else None
-        game_log = play_one_game(class_name, profile, seed)
+        game_log = play_one_game(class_name, solver, seed)
         game_log["game_id"] = i + 1
         game_log["run_id"] = run_id
         result = game_log["result"]
@@ -1520,6 +1262,7 @@ def run_simulation(n_games: int, class_name: str, profile: str,
     meta = {
         "run_id": run_id,
         "class": class_name,
+        "solver_kind": solver_kind,
         "profile": profile,
         "n_games": n_games,
         "seed_base": seed_base,
@@ -1549,7 +1292,10 @@ def parse_args() -> argparse.Namespace:
                         help="число партий")
     parser.add_argument("--class", dest="class_name", default=config.DEFAULT_CLASS,
                         help="класс бойца (warrior)")
-    parser.add_argument("--profile", default="rusher",
+    parser.add_argument("--solver", default="bot",
+                        choices=["bot", "human", "nn"],
+                        help="кто принимает решения (bot/human/nn)")
+    parser.add_argument("--profile", default=config.DEFAULT_PROFILE,
                         help="профиль бота (rusher)")
     parser.add_argument("--seed", type=int, default=None,
                         help="базовый сид (для воспроизводимости)")
@@ -1563,6 +1309,7 @@ def main() -> None:
     run_simulation(
         n_games=args.games,
         class_name=args.class_name,
+        solver_kind=args.solver,
         profile=args.profile,
         seed_base=args.seed,
         no_progress=args.no_progress,

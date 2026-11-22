@@ -6,7 +6,7 @@
 import random
 
 import data
-from equipment import get_equipment
+from equipment import get_equipment, get_slot, get_quality, is_elixir
 from solvers import Solver
 
 
@@ -28,8 +28,11 @@ class BotSolver(Solver):
     def distribute(self, party):
         return bot_distribute(party, self.profile)
 
-    def trade(self, party):
-        return bot_trade(party, self.profile)
+    def trade(self, party, floor_state):
+        return bot_trade(party, floor_state, self.profile)
+    
+    def drink(self, party, floor_state):
+        return bot_drink(party, floor_state, self.profile)
 
 # ============================================================
 # Утилиты
@@ -37,13 +40,27 @@ class BotSolver(Solver):
 def _item_value(code: str) -> int:
     """Ключ сортировки: W/S ценятся вдвое (приоритет экипировки)."""
     item = get_equipment(code)
-    slot = code[1]
-    return item["price"] * 2 if slot in ("W", "S") else item["price"]
+    return item["price"] * 2 if get_slot(code) in ("W", "S") else item["price"]
 
 def _fits_class(code: str, boiets: dict) -> bool:
     """Подходит ли предмет бойцу по классу (None -- всем)."""
     item = get_equipment(code)
     return item["class"] is None or item["class"] == boiets["class"]
+
+def _heal_amount(code: str) -> int:
+    """Сколько HP лечит эликсир (0 для не-лечебных и заглушек)."""
+    return get_equipment(code)["bonus"].get("hp", 0)
+
+def _available_elixirs(floor_state: dict) -> list:
+    """Эликсиры, доступные у торговца на текущем этаже (по качеству)."""
+    fi = floor_state["floor_index"]
+    qualities = data.ELIXIR_QUALITY_BY_FLOOR[fi]
+    result = []
+    for item in data.EQUIPMENT:
+        code = item["code"]
+        if is_elixir(code) and get_quality(code) in qualities:
+            result.append(code)
+    return result
 
 # ============================================================
 # Функции-стратегии, Решения бота (перенесены из simulator.py)
@@ -108,26 +125,126 @@ def bot_decide(available: list, party: list, floor_state: dict, profile: str, mo
     # по умолчанию -- первый вариант
     return random.choice(available)
 
-def bot_trade(party: list, profile: str) -> list:
-    """Выбирает сделки на торговце: продажа неэкипированных W/S (price > 0).
+def bot_drink(party: list, floor_state: dict, profile: str) -> list:
+    """Решает, кто какие эликсиры пьёт в начале хода (до distribute).
 
-    Возвращает список (boiets_idx, code). Мусор (price == 0) не трогаем --
-    его срежет trim_inventories, а в сортировке он и так в конце.
-    На будущее: если code -- эликсир (E), сделка означает покупку (TODO).
+    За ход боец пьёт не более 1 эликсира (RULES.md §10.5).
+    Лечение: берём эликсир, который не оверхилит >25% дефицита
+    (heal <= dhp*1.25); предпочитаем покрывающий (heal >= dhp),
+    из покрывающих -- самый дешёвый; если покрывающих нет --
+    самый большой heal из прошедших отсев.
+    RE02 (заглушка, heal=0) не пьётся.
+
+    Возвращает список (boiets_idx, code).
     """
-    deals = []
+    decisions = []
     for idx, b in enumerate(party):
         if b["hp"] <= 0:
             continue
+        dhp = b["max_hp"] - b["hp"]
+        if dhp <= 0:
+            continue
+        # кандидаты-лечебные в inventory бойца
+        candidates = []
         for code in b["inventory"]:
-            slot = code[1]
-            if slot not in ("W", "S"):
+            if not is_elixir(code):
+                continue
+            heal = _heal_amount(code)
+            if heal <= 0:
+                continue
+            candidates.append((code, heal))
+        # отсев по оверхилу <= 25%
+        candidates = [(c, h) for c, h in candidates if h <= dhp * 1.25]
+        if not candidates:
+            continue
+        # покрывающие -> самый дешёвый; иначе самый большой heal
+        covering = [(c, h) for c, h in candidates if h >= dhp]
+        if covering:
+            code, _ = min(covering, key=lambda t: get_equipment(t[0])["price"])
+        else:
+            code, _ = max(candidates, key=lambda t: t[1])
+        decisions.append((idx, code))
+    return decisions
+
+def bot_trade(party: list, floor_state: dict, profile: str) -> list:
+    """Выбирает сделки на торговце.
+       
+       Сделка -- (boiets_idx, code). Тип по code[1] (см. resolve_trade):
+        - "E": покупка эликсира;
+        - иначе: продажа снаряжения.
+
+       Для каждого живого бойца по очереди:
+        1. sell -- неэкипированные W/S с price > 0 (эликсиры не продаём);
+           estimated_gold растёт на price проданного.
+        2. free_slots = свободные слоты после sell;
+        3. buy "на сейчас" -- если dhp > 0 и есть подходящий эликсир
+           (dhp = max_hp - hp; отсев по оверхилу <= 25%; покрывающий -> самый дешёвый;
+           иначе самый большой heal). Один, даже при free_slots == 0.
+           estimated_gold уменьшается на price.
+        4. buy "про запас" -- до free_slots штук, максимальный heal/слот
+           (все эликсиры 1 слот), с учётом этажа и estimated_gold.
+           estimated_gold уменьшается на price каждой покупки.
+           RE02 не покупаем.
+       
+       resolve_trade идёт строго по списку; estimated_gold -- оценка бота,
+       чтобы не заказывать сделок на сумму больше реальной.
+       Возвращает список сделок в порядке применения (от sell до buy).
+       Мусор (price == 0) не трогаем -- его срежет trim_inventories, а в сортировке он и так в конце.
+    """
+    deals = []
+    available = _available_elixirs(floor_state)
+    # лечебные эликсиры, доступные на этаже (heal > 0)
+    heal_elixirs = [c for c in available if _heal_amount(c) > 0]
+    
+    for idx, b in enumerate(party):
+        if b["hp"] <= 0:
+            continue
+        estimated_gold = b["gold"]
+        # 1. sell
+        sold = []
+        for code in b["inventory"]:
+            if get_slot(code) not in ("W", "S"):
                 continue
             if code == b["equipped_weapon"] or code == b["equipped_armor"]:
                 continue
             if get_equipment(code)["price"] <= 0:
                 continue
+            sold.append(code)
             deals.append((idx, code))
+            estimated_gold += get_equipment(code)["price"]
+        # 2. свободные слоты после sell
+        free_slots = 6 - (len(b["inventory"]) - len(sold))
+        # 3. buy "на сейчас"
+        dhp = b["max_hp"] - b["hp"]
+        if dhp > 0 and heal_elixirs:
+            candidates = [(c, _heal_amount(c)) for c in heal_elixirs]
+            candidates = [(c, h) for c, h in candidates if h <= dhp * 1.25]
+            if candidates:
+                covering = [(c, h) for c, h in candidates if h >= dhp]
+                if covering:
+                    code, _ = min(covering,
+                                  key=lambda t: get_equipment(t[0])["price"])
+                else:
+                    code, _ = max(candidates, key=lambda t: t[1])
+                price = get_equipment(code)["price"]
+                if estimated_gold >= price:
+                    deals.append((idx, code))
+                    estimated_gold -= price
+                    # "на сейчас" слоты не тратит, можно купить сверх лимита       
+        # 4. buy "про запас" -- до free_slots, по убыванию heal
+        if free_slots > 0 and heal_elixirs:
+            # максимум heal на 1 слот: все эликсиры 1 слот -> просто heal desc
+            stock = sorted(heal_elixirs,
+                           key=lambda c: _heal_amount(c), reverse=True)
+            # сначала самые сильные; покупаем пока есть слоты и золото
+            for code in stock:
+                if free_slots <= 0:
+                    break
+                price = get_equipment(code)["price"]
+                while free_slots > 0 and estimated_gold >= price:
+                    deals.append((idx, code))
+                    estimated_gold -= price
+                    free_slots -= 1
     return deals
 
 def bot_distribute(party: list, profile: str) -> tuple:

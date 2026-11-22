@@ -97,13 +97,13 @@ def equipment_name(code: str) -> str:
 # Цвета типов тайлов (презентация)
 # ============================================================
 TILE_TYPE_COLORS = {
-    data.TileType.START: "#8fbf6f",
-    data.TileType.FORGE: "#e8a33d",
-    data.TileType.MONSTER: "#c0504d",
+    data.TileType.START:    "#8fbf6f",
+    data.TileType.FORGE:    "#e8a33d",
+    data.TileType.MONSTER:  "#c0504d",
     data.TileType.TREASURE: "#e3c44a",
-    data.TileType.EVENT: "#5b8fd6",
-    data.TileType.CAMP: "#9b6fbf",
-    data.TileType.TRADER: "#a9744f",
+    data.TileType.EVENT:    "#5b8fd6",
+    data.TileType.CAMP:     "#9b6fbf",
+    data.TileType.TRADER:   "#a9744f",
 }
 
 MAP_ROW_HEIGHT = 22      # высота строки этажа (px)
@@ -488,6 +488,13 @@ class GamePlayerApp:
                     )
                 elif kind == "effect_hung":
                     lines.append(f"  длительный эффект: {ev.get('turns')} хода")
+                elif kind == "drink":
+                    cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
+                    code = ev.get("code")
+                    lines.append(
+                        f"  выпил: ({code}) {equipment_name(code)} "
+                        f"→ HP {ev.get('hp_after')} ({cls})"
+                    )
                 elif kind == "loot":
                     cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
                     before = ", ".join(f"({c})" for c in ev.get("before", [])) or "—"
@@ -613,6 +620,16 @@ class GamePlayerApp:
                     lines.append(
                         f"  продано: ({code}) {equipment_name(code)} "
                         f"за {e.get('price')} ({cls})"
+                    )
+                elif kind == "trade_buy":
+                    lines.append(
+                        f"  куплено: ({code}) {equipment_name(code)} "
+                        f"за {e.get('price')} ({cls})"
+                    )
+                elif kind == "trade_no_gold":
+                    lines.append(
+                        f"  не хватило золота: ({code}) "
+                        f"{equipment_name(code)} за {e.get('price')} ({cls})"
                     )
                 elif kind == "trade_miss":
                     lines.append(f"  не найдено: ({code}) ({cls})")

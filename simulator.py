@@ -28,7 +28,11 @@ from datetime import datetime
 
 import config
 import data
-from equipment import get_equipment, recalc_stats
+from equipment import (
+    get_equipment, get_slot, recalc_stats,
+    grant_item, collect_trash, trim_inventories,
+    resolve_trade, resolve_treasure,
+)
 from solvers import make_solver
 
 # ============================================================
@@ -53,19 +57,6 @@ def snapshot_boiets(boiets: dict) -> dict:
         "equipped_weapon": boiets["equipped_weapon"],
         "equipped_armor": boiets["equipped_armor"],
     }
-
-def grant_item(boiets: dict, code: str, equipment_decks: dict) -> bool:
-    """Выдаёт предмет бойцу: убирает из колоды, кладёт в inventory.
-
-    Экипировку не трогает (её разрулит bot_distribute в free_phase).
-    Возвращает True, если карточка была в колоде и выдана; False -- если нет.
-    """
-    deck = equipment_decks[code[0]]
-    if code not in deck:
-        return False
-    deck.remove(code)
-    boiets["inventory"].append(code)
-    return True
 
 # ============================================================
 # Инициализация
@@ -140,26 +131,6 @@ def create_floor_state(floor_index: int) -> dict:
         "events_deck": events_deck,
         "active_effects": [],
     }
-
-# ============================================================
-# Перераспределение снаряжения
-# ============================================================
-
-def trim_inventories(party: list) -> tuple:
-    """Обрезает inventory до 6 у всех в party (живых и трупов).
-
-    Возвращает (events, trash): trash -- обрезанные предметы (для колод).
-    """
-    events = []
-    trash = []
-    for b in party:
-        if len(b["inventory"]) > 6:
-            dropped = b["inventory"][6:]
-            b["inventory"] = b["inventory"][:6]
-            events.append({"event": "trim", "class": b["class"],
-                           "dropped": list(dropped)})
-            trash.extend(dropped)
-    return events, trash
 
 # ============================================================
 # События: вычисление condition, select, effects
@@ -436,51 +407,80 @@ def check_level_up(boiets: dict) -> list:
         })
     return events
 
-def collect_trash(trash: list, equipment_decks: dict) -> None:
-    """Возвращает выбывшие предметы в колоды по качеству.
+def _apply_drink(party: list, floor_state: dict, solver) -> list:
+    """Исполняет решения solver.drink: пьёт эликсиры, применяет эффект.
 
-    Не перемешивает: каждый код вставляется в случайное место колоды
-    (включая начало и конец), что эквивалентно «подмешать карту».
+    Решение -- (boiets_idx, code). Проверяем: боец жив, code в его
+    inventory, code -- эликсир. Удаляем из inventory, применяем hp
+    (клэмп по max_hp). Эликсир исчезает (в колоду не возвращается).
+    Не более 1 эликсира на бойца за ход -- гарантируется тем, что
+    drink возвращает не больше одного (idx, code) на idx, но на всякий
+    случай считаем локально.
+
+    Возвращает events для лога.
     """
-    for code in trash:
-        deck = equipment_decks[code[0]]          # code[0] -- качество (U/R/V/L)
-        deck.insert(random.randint(0, len(deck)), code)
-    trash.clear()
-    
+    events = []
+    decisions = solver.drink(party, floor_state)
+    drank = set()
+    for idx, code in decisions:
+        if idx >= len(party):
+            continue
+        b = party[idx]
+        if b["hp"] <= 0:
+            continue
+        if idx in drank:
+            continue
+        if get_slot(code) != "E":
+            continue
+        if code not in b["inventory"]:
+            continue
+        b["inventory"].remove(code)
+        heal = get_equipment(code)["bonus"].get("hp", 0)
+        if heal > 0:
+            b["hp"] = min(b["max_hp"], b["hp"] + heal)
+        drank.add(idx)
+        events.append({"event": "drink", "class": b["class"],
+                       "code": code, "hp_after": b["hp"]})
+    return events
+
 # Свободная фаза
 def free_phase(party: list, floor_state: dict, solver,
                equipment_decks: dict) -> tuple:
     """Свободная фаза в начале хода.
 
     1. Тик active_effects (болезнь и т.п.) -- может добить бойцов.
-    2. bot_distribute -- перераспределение снаряжения и золота (трупы -- источник).
-    3. trim_inventories -- обрезка инвентарей до 6.
-    4. Чистка party от трупов (hp<=0); если погибла вся команда (wiped) -- (events, True).
-    5. Повышение уровня (level-up) всем живым бойцам (hp += чистовая дельта класса).
-    6. recalc_stats всем живым: at/df/max_hp с учётом снаряжения + клэмп hp.
-    7. collect_trash -- возврат выбывших предметов в колоды по качеству.
+    2. solver.drink -- эликсиры (не более 1 на бойца; до distribute).
+    3. solver.distribute -- перераспределение снаряжения и золота (трупы -- источник).
+    4. trim_inventories -- обрезка инвентарей до 6.
+    5. Чистка party от трупов (hp<=0); если погибла вся команда (wiped) -- (events, True).
+    6. Повышение уровня (level-up) всем живым бойцам (hp += чистовая дельта класса).
+    7. recalc_stats -- пересчёт параметров всем живым: at/df/max_hp с учётом снаряжения + клэмп hp.
+    8. collect_trash -- возврат выбывших предметов в колоды по качеству (эликсиры исчезают).
     Возвращает (events, wiped).
     """
     events = []
     trash = []
     # 1. тик активных эффектов
     events.extend(tick_active_effects(party, floor_state))
-    # 2. перераспределение снаряжения и золота -- заглушка 0.5.0
+    # 2. эликсиры (до distribute: выпитое освобождает слоты)
+    drink_events = _apply_drink(party, floor_state, solver)
+    events.extend(drink_events)    
+    # 3. перераспределение снаряжения и золота
     ev, tr = solver.distribute(party)
     events.extend(ev); trash.extend(tr)
-    # 3. обрезка инвентарей
+    # 4. обрезка инвентарей
     ev, tr = trim_inventories(party)
     events.extend(ev); trash.extend(tr)
-    # 4. чистка от трупов
+    # 5. чистка от трупов
     dead_events, wiped, tr = cleanup_dead(party, floor_state)
     events.extend(dead_events); trash.extend(tr)
     if wiped:
         collect_trash(trash, equipment_decks)
         return events, True
-    # 5. повышение уровня
+    # 6. повышение уровня
     for b in party:
         events.extend(check_level_up(b))
-    # 6. пересчёт характеристик
+    # 7. пересчёт характеристик
     for b in party:
         recalc_stats(b)
     collect_trash(trash, equipment_decks)
@@ -859,45 +859,6 @@ def _ensure_monsters(tile: dict, floor_state: dict, party: list, kind: str) -> N
             floor_state["floor_index"], len(party), tile["monster_formula"]
         )
 
-def _roll_quality(floor_index: int, d6: int) -> str:
-    """Качество предмета в сокровищнице (RULES.md §6.2).
-
-    Возвращает "U"/"R"/"V"/"L" по таблице data.EQUIPMENT_QUALITY_TABLE.
-    """
-    return data.EQUIPMENT_QUALITY_TABLE[d6 - 1][floor_index]
-
-def resolve_treasure(tile: dict, floor_state: dict, equipment_decks: dict) -> None:
-    """Бросает d6 (§6.1) и фиксирует результат в tile["treasure"].
-
-    kind: "gold" | "equipment" | "mimic".
-    d6 4-6 -- карта снаряжения: сначала качество (§6.2), затем тянем из
-    колоды качества. Если колода пуста -- компенсация золотом (d6=2-3).
-    5.1: мимик трактуется как -1 золото лидеру (в 5.2 -- бой).
-    """
-    fi = floor_state["floor_index"]
-    d6 = roll_d6()
-    if d6 == 1:
-        tile["treasure"] = {"kind": "mimic"}
-        return
-    if d6 <= 3:
-        tile["treasure"] = {"kind": "gold", "amount": [3, 6, 12, 24][fi]}
-        return
-    # d6 4-6: карта снаряжения -- сначала качество (§6.2)
-    quality_d6 = roll_d6()
-    quality = _roll_quality(fi, quality_d6)
-    deck = equipment_decks[quality]
-    if not deck:
-        # колода качества пуста -- компенсация золотом (d6=2-3)
-        tile["treasure"] = {"kind": "gold", "amount": [3, 6, 12, 24][fi],
-                            "note": "deck_empty"}
-        return
-    code = random.choice(deck)          # выбрать, НЕ забирать (заберёт grant_item)
-    if d6 == 6:
-        tile["treasure"] = {"kind": "equipment", "code": code,
-                            "gold": [3, 6, 12, 24][fi]}
-    else:
-        tile["treasure"] = {"kind": "equipment", "code": code}
-
 # Разрешение тайла
 def resolve_tile(position: int, floor_state: dict, party: list,
                  equipment_decks: dict) -> list:
@@ -993,30 +954,6 @@ def resolve_tile(position: int, floor_state: dict, party: list,
     # старт -- только пропуск
     return [data.Action.SKIP]
 
-def resolve_trade(party: list, deals: list) -> list:
-    """Применяет сделки на торговце.
-
-    Сделка (boiets_idx, code): у бойца удаляется code из inventory,
-    ему начисляется price золота. На будущее: если code -- эликсир (E),
-    сделка означает покупку (списать price, добавить в inventory) -- TODO.
-    Возвращает events для лога.
-    """
-    events = []
-    for idx, code in deals:
-        if idx >= len(party):
-            continue
-        b = party[idx]
-        price = get_equipment(code)["price"]
-        if code in b["inventory"]:
-            b["inventory"].remove(code)
-            b["gold"] += price
-            events.append({"event": "trade_sell", "class": b["class"],
-                           "code": code, "price": price})
-        else:
-            events.append({"event": "trade_miss", "class": b["class"],
-                           "code": code})
-    return events
-
 # ============================================================
 # Завершение партии
 # ============================================================
@@ -1040,6 +977,8 @@ def play_one_game(class_name: str, solver, seed: int) -> dict:
     # Колоды снаряжения по качеству (одна на игру).
     equipment_decks = {"U": [], "R": [], "V": [], "L": []}
     for item in data.EQUIPMENT:
+        if item["code"][1] == "E":
+            continue
         equipment_decks[item["code"][0]].append(item["code"])
     for q in equipment_decks:
         random.shuffle(equipment_decks[q])
@@ -1150,7 +1089,7 @@ def play_one_game(class_name: str, solver, seed: int) -> dict:
         
         # 7.6. торговец
         elif action == data.Action.TRADE:
-            deals = solver.trade(party)
+            deals = solver.trade(party, floor_state)
             trade_log = resolve_trade(party, deals)
             trade_snapshot = {"deals": len(deals), "log": trade_log}
         

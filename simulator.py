@@ -34,6 +34,7 @@ from equipment import (
     resolve_trade, resolve_treasure,
 )
 from solvers import make_solver
+from combat import run_combat
 
 # ============================================================
 # Утилиты
@@ -44,7 +45,7 @@ def roll_d6() -> int:
 
 def snapshot_boiets(boiets: dict) -> dict:
     """Снимок бойца для лога (то, что покажет player.py)."""
-    return {
+    snap = {
         "class": boiets["class"],
         "level": boiets["level"],
         "hp": boiets["hp"],
@@ -57,6 +58,9 @@ def snapshot_boiets(boiets: dict) -> dict:
         "equipped_weapon": boiets["equipped_weapon"],
         "equipped_armor": boiets["equipped_armor"],
     }
+    if boiets.get("init"):
+        snap["init"] = boiets["init"]
+    return snap
 
 # ============================================================
 # Инициализация
@@ -67,11 +71,11 @@ def create_boiets(class_name: str, level: int = 1) -> dict:
     Без стартового предмета: выдача -- отдельно, через grant_item.
     at/df/max_hp -- заглушки, заполняются recalc_stats ниже.
     """
-    level_data = data.CLASSES[class_name][level - 1]  # индекс 0 -- уровень 1
+    level_bonus = data.CLASSES[class_name][level - 1]["bonus"]  # индекс 0 -- уровень 1
     boiets = {
         "class": class_name,
         "level": level,
-        "hp": level_data["hp"],
+        "hp": level_bonus.get("hp", 0),
         "max_hp": 0,                 # заполнит recalc_stats
         "at": 0,                     # заполнит recalc_stats
         "df": 0,                     # заполнит recalc_stats
@@ -304,19 +308,28 @@ def tick_active_effects(party: list, floor_state: dict) -> list:
 
     for eff in floor_state["active_effects"]:
         t = eff["target"]
+        known = False
         for k, amount in eff["effects"].items():
             if k == "hp":
+                known = True
                 t["hp"] = max(0, min(t["max_hp"], t["hp"] + amount))
                 log.append({"event": "hp", "class": t["class"],
                             "delta": amount, "after": t["hp"]})
             elif k == "gold":
+                known = True
                 t["gold"] = max(0, t["gold"] + amount)
                 log.append({"event": "gold", "class": t["class"],
                             "delta": amount, "after": t["gold"]})
             elif k == "xp":
+                known = True
                 t["xp"] += amount
                 log.append({"event": "xp", "class": t["class"],
                             "delta": amount, "after": t["xp"]})
+        if not known:
+            # незнакомый эффект (например, init от RE02) -- не тикаем,
+            # его обработает make_fighter_copy при входе в бой
+            remaining.append(eff)
+            continue
         eff["turns_left"] -= 1
         if eff["turns_left"] > 0:
             remaining.append(eff)
@@ -392,11 +405,11 @@ def check_level_up(boiets: dict) -> list:
             break
         boiets["xp"] -= cost
         old_level = boiets["level"]
-        old_base_hp = table[old_level - 1]["hp"]
+        old_base_hp = table[old_level - 1]["bonus"].get("hp", 0)
         boiets["level"] += 1
         # лечение -- чистая классовая дельта (без снаряжения);
         # at/df/max_hp и клэмп hp -- в recalc_stats (free_phase)
-        boiets["hp"] += next_level_data["hp"] - old_base_hp
+        boiets["hp"] += next_level_data["bonus"].get("hp", 0) - old_base_hp
         events.append({
             "event": "level_up",
             "class": boiets["class"],
@@ -435,12 +448,37 @@ def _apply_drink(party: list, floor_state: dict, solver) -> list:
         if code not in b["inventory"]:
             continue
         b["inventory"].remove(code)
-        heal = get_equipment(code)["bonus"].get("hp", 0)
+        bonus = get_equipment(code)["bonus"]
+        # эликсир лечения
+        heal = bonus.get("hp", 0)
         if heal > 0:
             b["hp"] = min(b["max_hp"], b["hp"] + heal)
+        # эликсир скорости
+        init_bonus = bonus.get("init", 0)
+        if init_bonus:
+            # эффект «до конца ближайшего следующего боя»: turns_left=1,
+            # make_fighter_copy уменьшит при входе в бой и удалит.
+            # Повторный RE02 увеличивает turns_left (эффект один).
+            existing = None
+            for eff in floor_state["active_effects"]:
+                if eff["target"] is b and eff["effects"].get("init") == init_bonus:
+                    existing = eff
+                    break
+            if existing is not None:
+                existing["turns_left"] += 1
+            else:
+                floor_state["active_effects"].append({
+                    "target": b,
+                    "effects": {"init": init_bonus},
+                    "turns_left": 1,
+                    "source": code,
+                })
         drank.add(idx)
-        events.append({"event": "drink", "class": b["class"],
-                       "code": code, "hp_after": b["hp"]})
+        ev = {"event": "drink", "class": b["class"],
+              "code": code, "hp_after": b["hp"]}
+        if init_bonus:
+            ev["init_bonus"] = init_bonus
+        events.append(ev)
     return events
 
 # Свободная фаза
@@ -523,17 +561,19 @@ def draw_monsters(floor_index: int, n_fighters: int, formula: dict) -> list:
         pool_index = card["pool"]
         monster_index = card["monster"]
         src = data.MONSTERS[pool_index][monster_index]
+        bonus = src["bonus"]
         monsters.append({
             "source": {"type": "monster", "pool": pool_index, "monster": monster_index},
-            "hp": src["hp"],
-            "max_hp": src["hp"],
-            "at": src["at"],
-            "df": src["df"],
+            "hp": bonus["hp"],
+            "max_hp": bonus["hp"],
+            "at": bonus.get("at", 0),
+            "df": bonus.get("df", 0),
+            "init": bonus.get("init", 0),
             "xp": src["xp"],
             "gd": src["gd"],
         })
     return monsters
-
+# ------------------------------------------------------------
 def build_camp_monsters(class_name: str, level: int) -> list:
     """Создаёт боевой экземпляр обитателя лагеря для run_combat.
 
@@ -549,6 +589,9 @@ def build_camp_monsters(class_name: str, level: int) -> list:
         fighter["at"] += bonus.get("at", 0)
         fighter["df"] += bonus.get("df", 0)
         fighter["max_hp"] += bonus.get("hp", 0)
+        fighter["init"] = fighter.get("init", 0) + bonus.get("init", 0)
+        if fighter["init"] == 0 and "init" in fighter:
+            del fighter["init"]
         fighter["hp"] = fighter["max_hp"]
     return [{
         "source": {"type": "camp", "class": class_name, "level": level},
@@ -556,10 +599,11 @@ def build_camp_monsters(class_name: str, level: int) -> list:
         "max_hp": fighter["max_hp"],
         "at": fighter["at"],
         "df": fighter["df"],
+        "init": fighter.get("init", 0),
         "xp": level,
         "gd": 10,
     }]
-
+# ------------------------------------------------------------
 def build_event_monsters(specs: list) -> list:
     """Создаёт боевых монстров по спецификациям (pool, index).
 
@@ -574,14 +618,16 @@ def build_event_monsters(specs: list) -> list:
         if index is None:
             index = random.randrange(len(data.MONSTERS[pool]))
         src = data.MONSTERS[pool][index]
+        bonus = src["bonus"]
         monsters.append({
             "source": {"type": "monster", "pool": pool, "monster": index},
-            "hp": src["hp"], "max_hp": src["hp"],
-            "at": src["at"], "df": src["df"],
+            "hp": bonus["hp"], "max_hp": bonus["hp"],
+            "at": bonus.get("at", 0), "df": bonus.get("df", 0),
+            "init": bonus.get("init", 0),
             "xp": src["xp"], "gd": src["gd"],
         })
     return monsters
-
+# ------------------------------------------------------------
 def build_mimic(floor_index: int) -> list:
     """Создаёт боевой экземпляр мимика (один, независимо от размера команды).
 
@@ -589,183 +635,54 @@ def build_mimic(floor_index: int) -> list:
     source: {"type": "mimic", "floor": floor_index} -- для лога/плеера.
     """
     src = data.MIMICS[floor_index]
+    bonus = src["bonus"]
     return [{
         "source": {"type": "mimic", "floor": floor_index},
-        "hp": src["hp"],
-        "max_hp": src["hp"],
-        "at": src["at"],
-        "df": src["df"],
+        "hp": bonus["hp"],
+        "max_hp": bonus["hp"],
+        "at": bonus.get("at", 0),
+        "df": bonus.get("df", 0),
+        "init": bonus.get("init", 0),
         "xp": src["xp"],
         "gd": src["gd"],
     }]
+# ------------------------------------------------------------
+def make_fighter_copy(b: dict, floor_state: dict) -> dict:
+    """Боевая копия бойца с учётом активных эффектов (RE02 и т.п.).
 
-# ============================================================
-# Бой
-# ============================================================
-def run_combat(party: list, monsters: list) -> dict:
-    """Проводит бой до победы или поражения команды.
-
-    party    -- список бойцов (живые и мёртвые; мёртвые остаются до конца хода
-                               чистка трупов -- в free_phase следующего хода).
-    monsters -- список боевых экземпляров из draw_monsters или build_camp_monsters.
-                У каждого есть "source" для лога:
-                {"type": "monster", "pool", "monster"} или
-                {"type": "camp", "class", "level"}.
-
-    Возвращает combat_log:
-    { "party": [{"class": "warrior", "level": 1,
-                 "at": 2, "df": 3, "max_hp": 17}],
-      "monsters": [m["source"] for m in monsters],
-      "rounds": [{"round": int,
-                  "hp_start_round": {"b": [hp...], "m": [hp...]},
-                  "initiative": {"b": [roll_or_None...], "m": [roll_or_None...]},
-                  "actions": [{"type": "attack",
-                               "actor": "b"|"m", "actor_index": int,
-                               "target_index": int, "roll": int, "damage": int}]},
-                 ...,
-                 {"round": N, "hp_start_round": {...} }  # финальный: без initiative и actions
-      ],
-      "result": "win"|"lose"|"stuck", "xp_gained": int, "gold_gained": int }
+    Читает floor_state["active_effects"]: для каждого эффекта с target is b,
+    если в effects есть "init" -- добавляет к копии, turns_left -= 1;
+    при 0 -- удаляет эффект из floor_state. Остальные effects (hp/gold/xp)
+    не трогаем -- их тикает tick_active_effects в free_phase.
     """
-    combat_log = {
-        "party": [
-            {"class": b["class"], "level": b["level"],
-             "at": b["at"], "df": b["df"], "max_hp": b["max_hp"]}
-            for b in party
-        ],
-        "monsters": [m["source"] for m in monsters],
-        "rounds": [],
-        "result": None,
-        "xp_gained": 0,
-        "gold_gained": 0,
+    copy = {
+        "class": b["class"],
+        "level": b["level"],
+        "hp": b["hp"],
+        "max_hp": b["max_hp"],
+        "at": b["at"],
+        "df": b["df"],
+        "xp": 0,          # дельта за бой
+        "gold": 0,        # дельта за бой
     }
-    round_num = 0
-    
-    while True:
-        round_num += 1
-         
-        # 1. Снимок HP всех участников на начало раунда.
-        hp_start_round = {
-            "b": [b["hp"] for b in party],
-            "m": [m["hp"] for m in monsters],
-        }       
-         
-        # 2. Проверка завершения боя до броска инициативы
-        monsters_alive = [m for m in monsters if m["hp"] > 0]
-        party_alive = [b for b in party if b["hp"] > 0]
-        if not party_alive:
-            combat_log["result"] = "lose"
-        elif not monsters_alive:
-            combat_log["result"] = "win"
-        elif round_num > config.MAX_COMBAT_STEPS:
-            # защита от бесконечного боя (не должно случаться)
-            combat_log["result"] = "stuck"
-        
-        if combat_log["result"] is not None:
-            # финальный раунд: только снимок HP, без инициативы и действий
-            combat_log["rounds"].append({
-                "round": round_num,
-                "hp_start_round": hp_start_round,
-            })
-            break
-
-        # 3. Инициатива: каждый живой участник бросает d6 отдельно за себя.
-        #    init_b/init_m — броски по порядку party/monsters, None для мёртвых.
-        participants = []
-        init_b = [None] * len(party)
-        init_m = [None] * len(monsters)
-        for i, b in enumerate(party):
-            if b["hp"] > 0:
-                r = roll_d6()
-                participants.append(("b", i, r))
-                init_b[i] = r
-        for i, m in enumerate(monsters):
-            if m["hp"] > 0:
-                r = roll_d6()
-                participants.append(("m", i, r))
-                init_m[i] = r
-        #    порядок действий: перемешиваем и сортируем по убыванию инициативы
-        random.shuffle(participants)
-        participants.sort(key=lambda x: x[2], reverse=True)
-
-        # 4. Действия в порядке инициативы.
-        round_actions = []
-        for kind, idx, init in participants:
-            if kind == "b":
-                b = party[idx]
-                if b["hp"] <= 0:
-                    continue  # погиб в этом же раунде до своего хода
-                alive = [j for j, m in enumerate(monsters) if m["hp"] > 0]
-                if not alive:
-                    break
-                target_j = random.choice(alive)
-                target = monsters[target_j]
-                roll = roll_d6()
-                dmg = max(0, roll + b["at"] - target["df"])
-                target["hp"] -= dmg
-                target["hp"] = max(0, target["hp"]) # клэмп hp
-                round_actions.append({
-                    "type": "attack",
-                    "actor": "b",
-                    "actor_index": idx,
-                    "target_index": target_j,
-                    "roll": roll,
-                    "damage": dmg,
-                })
-            else:
-                m = monsters[idx]
-                if m["hp"] <= 0:
-                    continue
-                alive = [j for j, b in enumerate(party) if b["hp"] > 0]
-                if not alive:
-                    break
-                target_idx = random.choice(alive)
-                target = party[target_idx]
-                roll = roll_d6()
-                dmg = max(0, roll + m["at"] - target["df"])
-                target["hp"] -= dmg
-                target["hp"] = max(0, target["hp"]) # клэмп hp
-                round_actions.append({
-                    "type": "attack",
-                    "actor": "m",
-                    "actor_index": idx,
-                    "target_index": target_idx,
-                    "roll": roll,
-                    "damage": dmg,
-                })
-
-        combat_log["rounds"].append({
-            "round": round_num,
-            "hp_start_round": hp_start_round,
-            "initiative": {"b": init_b, "m": init_m},
-            "actions": round_actions,
-        })
-
-    # 5. Награда при победе (делим между выжившими).
-    if combat_log["result"] == "win":
-        survivors = [b for b in party if b["hp"] > 0]
-        total_xp = sum(m["xp"] for m in monsters)
-        total_gd = sum(m["gd"] for m in monsters)
-        if survivors:
-            xp_share = total_xp // len(survivors)
-            xp_rest = total_xp % len(survivors)
-            for i, b in enumerate(survivors):
-                b["xp"] += xp_share
-                if i == 0:  # остаток первому (rusher)
-                    b["xp"] += xp_rest
-            gd_share = total_gd // len(survivors)
-            gd_rest = total_gd % len(survivors)
-            for i, b in enumerate(survivors):
-                b["gold"] += gd_share
-                if i == 0:
-                    b["gold"] += gd_rest
-            combat_log["xp_gained"] = total_xp
-            combat_log["gold_gained"] = total_gd
-
-    # 6. Чистка трупов -- в free_phase следующего хода (cleanup_dead).
-    #    Здесь party оставляем как есть: в шаге лога будут трупы с hp=0.
-    return combat_log
-
+    if b.get("init"):
+        copy["init"] = b["init"]
+    # активные эффекты на бойца
+    remaining = []
+    for eff in floor_state["active_effects"]:
+        if eff["target"] is not b:
+            remaining.append(eff)
+            continue
+        init_bonus = eff["effects"].get("init", 0)
+        if init_bonus:
+            copy["init"] = copy.get("init", 0) + init_bonus
+            eff["turns_left"] -= 1
+            if eff["turns_left"] > 0:
+                remaining.append(eff)
+        else:
+            remaining.append(eff)
+    floor_state["active_effects"] = remaining
+    return copy
 # ============================================================
 # Разрешение тайла (варианты действий)
 # ============================================================
@@ -1095,7 +1012,13 @@ def play_one_game(class_name: str, solver, seed: int) -> dict:
         
         # 8. единая точка вызова run_combat
         if fight:
-            combat_log = run_combat(party, tile["monsters"])
+            fighters = [make_fighter_copy(b, floor_state) for b in party]
+            combat_log, changes = run_combat(fighters, tile["monsters"])
+            # применение изменений hp, xp, gold
+            for i, ch in enumerate(changes):
+                party[i]["hp"] += ch["hp_delta"]
+                party[i]["xp"] += ch["xp_delta"]
+                party[i]["gold"] += ch["gold_delta"]
             if combat_log["result"] == "win":
                 tile["visited"] = True
                 tile["monsters"] = []

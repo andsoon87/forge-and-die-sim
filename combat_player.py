@@ -48,9 +48,14 @@ def opponent_stats(source: dict) -> dict:
     """Базовые статы противника из data: at, df, hp."""
     t = source.get("type")
     if t == "monster":
-        return data.MONSTERS[source["pool"]][source["monster"]]
+        b = data.MONSTERS[source["pool"]][source["monster"]]["bonus"]
+        return {"at": b.get("at", 0), "df": b.get("df", 0), "hp": b.get("hp", 0)}
     if t == "camp":
-        return data.CLASSES[source["class"]][source["level"] - 1]
+        b = data.CLASSES[source["class"]][source["level"] - 1]["bonus"]
+        return {"at": b.get("at", 0), "df": b.get("df", 0), "hp": b.get("hp", 0)}
+    if t == "mimic":
+        b = data.MIMICS[source["floor"]]["bonus"]
+        return {"at": b.get("at", 0), "df": b.get("df", 0), "hp": b.get("hp", 0)}
     return {"at": "?", "df": "?", "hp": "?"}
 
 def result_name(result: str) -> str:
@@ -183,9 +188,11 @@ class CombatPlayerApp:
             hp = hp_b[i] if i < len(hp_b) else "?"
             init = init_b[i] if i < len(init_b) else None
             cls = data.CLASS_NAMES.get(b["class"], b["class"])
+            init_bonus = b.get("init", 0)
+            init_part = f"  +in: {init_bonus},\n" if init_bonus else ""
             lines.append(
                 f"{cls} ур.{b['level']}\n"
-                f"  at: {b['at']}, df: {b['df']},\n"
+                f"  at: {b['at']}, df: {b['df']},\n{init_part}"
                 f"  hp: {hp}/{b['max_hp']},"
             )
             if init is not None:

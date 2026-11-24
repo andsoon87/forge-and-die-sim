@@ -99,7 +99,7 @@ def bot_move(floor_state: dict, party: list, profile: str) -> int:
     if can_back:
         options.append(-1)
     return random.choice(options)
-
+# ------------------------------------------------------------
 def bot_decide(available: list, party: list, floor_state: dict, profile: str, monsters: list) -> int:
     """Выбирает одно Action из списка доступных по профилю.
     available -- варианты на текущем тайле (len > 1; при len == 1 не вызывается).
@@ -124,16 +124,16 @@ def bot_decide(available: list, party: list, floor_state: dict, profile: str, mo
 
     # по умолчанию -- первый вариант
     return random.choice(available)
-
+# ------------------------------------------------------------
 def bot_drink(party: list, floor_state: dict, profile: str) -> list:
     """Решает, кто какие эликсиры пьёт в начале хода (до distribute).
 
     За ход боец пьёт не более 1 эликсира (RULES.md §10.5).
+    Приоритет: лечение (если есть подходящий), иначе -- скорость (RE02).
     Лечение: берём эликсир, который не оверхилит >25% дефицита
     (heal <= dhp*1.25); предпочитаем покрывающий (heal >= dhp),
     из покрывающих -- самый дешёвый; если покрывающих нет --
-    самый большой heal из прошедших отсев.
-    RE02 (заглушка, heal=0) не пьётся.
+    самый большой heal.
 
     Возвращает список (boiets_idx, code).
     """
@@ -142,30 +142,38 @@ def bot_drink(party: list, floor_state: dict, profile: str) -> list:
         if b["hp"] <= 0:
             continue
         dhp = b["max_hp"] - b["hp"]
-        if dhp <= 0:
-            continue
-        # кандидаты-лечебные в inventory бойца
-        candidates = []
-        for code in b["inventory"]:
-            if not is_elixir(code):
-                continue
-            heal = _heal_amount(code)
-            if heal <= 0:
-                continue
-            candidates.append((code, heal))
-        # отсев по оверхилу <= 25%
-        candidates = [(c, h) for c, h in candidates if h <= dhp * 1.25]
-        if not candidates:
-            continue
-        # покрывающие -> самый дешёвый; иначе самый большой heal
-        covering = [(c, h) for c, h in candidates if h >= dhp]
-        if covering:
-            code, _ = min(covering, key=lambda t: get_equipment(t[0])["price"])
-        else:
-            code, _ = max(candidates, key=lambda t: t[1])
-        decisions.append((idx, code))
+        chosen = None
+        
+        if dhp > 0:
+            # кандидаты-лечебные в inventory бойца
+            candidates = []
+            for code in b["inventory"]:
+                if not is_elixir(code):
+                    continue
+                heal = _heal_amount(code)
+                if heal <= 0:
+                    continue
+                candidates.append((code, heal))
+            # отсев по оверхилу <= 25%
+            candidates = [(c, h) for c, h in candidates if h <= dhp * 1.25]
+            if candidates:
+                # покрывающие -> самый дешёвый; иначе самый большой heal
+                covering = [(c, h) for c, h in candidates if h >= dhp]
+                if covering:
+                    chosen, _ = min(covering,
+                                    key=lambda t: get_equipment(t[0])["price"])
+                else:
+                    chosen, _ = max(candidates, key=lambda t: t[1])
+        if chosen is None:
+            # лечение не выбрано -- пробуем RE02 (init-эликсир)
+            for code in b["inventory"]:
+                if is_elixir(code) and get_equipment(code)["bonus"].get("init"):
+                    chosen = code
+                    break
+        if chosen is not None:
+            decisions.append((idx, chosen))
     return decisions
-
+# ------------------------------------------------------------
 def bot_trade(party: list, floor_state: dict, profile: str) -> list:
     """Выбирает сделки на торговце.
        
@@ -215,6 +223,7 @@ def bot_trade(party: list, floor_state: dict, profile: str) -> list:
         # 2. свободные слоты после sell
         free_slots = 6 - (len(b["inventory"]) - len(sold))
         # 3. buy "на сейчас"
+        bought_now_heal = False
         dhp = b["max_hp"] - b["hp"]
         if dhp > 0 and heal_elixirs:
             candidates = [(c, _heal_amount(c)) for c in heal_elixirs]
@@ -230,6 +239,7 @@ def bot_trade(party: list, floor_state: dict, profile: str) -> list:
                 if estimated_gold >= price:
                     deals.append((idx, code))
                     estimated_gold -= price
+                    bought_now_heal = True
                     # "на сейчас" слоты не тратит, можно купить сверх лимита       
         # 4. buy "про запас" -- до free_slots, по убыванию heal
         if free_slots > 0 and heal_elixirs:
@@ -245,8 +255,22 @@ def bot_trade(party: list, floor_state: dict, profile: str) -> list:
                     deals.append((idx, code))
                     estimated_gold -= price
                     free_slots -= 1
+        # 5. buy "на сейчас" RE02 -- если лечение "на сейчас" не куплено
+        #    и после всех покупок остались деньги; один, сверх лимита.
+        if not bought_now_heal:
+            init_elixirs = [c for c in available
+                            if _heal_amount(c) == 0
+                            and get_equipment(c)["bonus"].get("init")]
+            if init_elixirs:
+                # самый дорогой/сильный из доступных (обычно RE02)
+                code = max(init_elixirs,
+                           key=lambda c: get_equipment(c)["bonus"].get("init", 0))
+                price = get_equipment(code)["price"]
+                if estimated_gold > price:
+                    deals.append((idx, code))
+                    estimated_gold -= price
     return deals
-
+# ------------------------------------------------------------
 def bot_distribute(party: list, profile: str) -> tuple:
     """Перераспределяет снаряжение и золото между живыми бойцами.
 

@@ -41,16 +41,18 @@ def is_elixir(code: str) -> bool:
 def recalc_stats(boiets: dict) -> None:
     """Пересчитывает at/df/max_hp бойца с учётом снаряжения.
 
-    База -- data.CLASSES[class][level-1].
+    База -- data.CLASSES[class][level-1]["bonus"].
     Бонусы: equipped_weapon + equipped_armor + все аксессуары (slot=="A")
     из inventory. Неэкипированные W/S в inventory бонусов не дают.
-    Эликсиры (slot "E") бонусов к at/df/max_hp не дают (эффект разовый).
+    Эликсиры (slot "E") в recalc_stats не участвуют (эффект разовый).
+    init -- база класса + снаряжение (временный init_bonus_temp -- в бою).
     hp клэмпится вниз по новому max_hp (не лечит).
     """
-    base = data.CLASSES[boiets["class"]][boiets["level"] - 1]
-    at = base["at"]
-    df = base["df"]
-    max_hp = base["hp"]
+    base_bonus = data.CLASSES[boiets["class"]][boiets["level"] - 1]["bonus"]
+    at = base_bonus.get("at", 0)
+    df = base_bonus.get("df", 0)
+    max_hp = base_bonus.get("hp", 0)
+    init = base_bonus.get("init", 0)
 
     codes = []
     if boiets.get("equipped_weapon"):
@@ -67,10 +69,18 @@ def recalc_stats(boiets: dict) -> None:
         at += bonus.get("at", 0)
         df += bonus.get("df", 0)
         max_hp += bonus.get("hp", 0)
+        init += bonus.get("init", 0)
 
     boiets["at"] = at
     boiets["df"] = df
     boiets["max_hp"] = max_hp
+    
+    # если бонуса нет init == 0, не храним его
+    if init != 0:
+        boiets["init"] = init
+    elif "init" in boiets:
+        del boiets["init"]
+
     if boiets["hp"] > max_hp:
         boiets["hp"] = max_hp
 

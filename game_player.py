@@ -448,10 +448,13 @@ class GamePlayerApp:
             lines.append("Бойцы:")
             for b in party:
                 cls = data.CLASS_NAMES.get(b["class"], b["class"])
+                init_part = (f", +in {b['init']}"
+                             if b.get("init") else "")
                 lines.append(
-                    f"  {cls}, XP {b.get('xp', 0)}, ур.{b['level']}, "
-                    f"HP {b['hp']}/{b['max_hp']}, "
-                    f"AT {b.get('at', '?')}, DF {b.get('df', '?')}"
+                    f"  {cls}, xp {b.get('xp', 0)}, ур.{b['level']}, "
+                    f"hp {b['hp']}/{b['max_hp']}, "
+                    f"at {b.get('at', '?')}, df {b.get('df', '?')}"
+                    f"{init_part}"
                 )
                 lines.append("  Инвентарь:")
                 lines.append(f"  Золото {b.get('gold', 0)}")
@@ -491,10 +494,17 @@ class GamePlayerApp:
                 elif kind == "drink":
                     cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
                     code = ev.get("code")
-                    lines.append(
-                        f"  выпил: ({code}) {equipment_name(code)} "
-                        f"→ HP {ev.get('hp_after')} ({cls})"
-                    )
+                    init_bonus = ev.get("init_bonus")
+                    if init_bonus:
+                        lines.append(
+                            f"  выпил: ({code}) {equipment_name(code)} "
+                            f"→ +{init_bonus} in ({cls})"
+                        )
+                    else:
+                        lines.append(
+                            f"  выпил: ({code}) {equipment_name(code)} "
+                            f"→ HP {ev.get('hp_after')} ({cls})"
+                        )
                 elif kind == "loot":
                     cls = data.CLASS_NAMES.get(ev.get("class"), ev.get("class"))
                     before = ", ".join(f"({c})" for c in ev.get("before", [])) or "—"

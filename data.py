@@ -16,40 +16,40 @@ from enum import IntEnum
 # ability — строка-описание (позже движок будет её обрабатывать)
 
 WARRIOR = [
-    {"xp_cost": 0,   "hp": 14, "at": 1, "df": 3, "ability": "stoykost_1"},      # уровень 1
-    {"xp_cost": 8,   "hp": 17, "at": 1, "df": 4, "ability": None},              # уровень 2
-    {"xp_cost": 18,  "hp": 20, "at": 2, "df": 4, "ability": "stoykost_duha"},   # уровень 3
-    {"xp_cost": 30,  "hp": 24, "at": 3, "df": 5, "ability": "stoykost_2"},      # уровень 4
-    {"xp_cost": 46,  "hp": 28, "at": 4, "df": 6, "ability": None},              # уровень 5
-    {"xp_cost": 72,  "hp": 33, "at": 5, "df": 7, "ability": None},              # уровень 6
-    {"xp_cost": 147, "hp": 42, "at": 7, "df": 9, "ability": "stoykost_3"},      # уровень 7
+    {"xp_cost": 0,   "bonus": {"hp": 14, "at": 1, "df": 3}, "ability": [("stk",1)]},          # уровень 1
+    {"xp_cost": 8,   "bonus": {"hp": 17, "at": 1, "df": 4}, "ability": [("stk",1)]},          # уровень 2
+    {"xp_cost": 18,  "bonus": {"hp": 20, "at": 2, "df": 4}, "ability": [("stk",1), ("std",)]},# уровень 3
+    {"xp_cost": 30,  "bonus": {"hp": 24, "at": 3, "df": 5}, "ability": [("stk",2), ("std",)]},# уровень 4
+    {"xp_cost": 46,  "bonus": {"hp": 28, "at": 4, "df": 6}, "ability": [("stk",2), ("std",)]},# уровень 5
+    {"xp_cost": 72,  "bonus": {"hp": 33, "at": 5, "df": 7}, "ability": [("stk",2), ("std",)]},# уровень 6
+    {"xp_cost": 147, "bonus": {"hp": 42, "at": 7, "df": 9}, "ability": [("stk",3), ("std",)]},# уровень 7
 ]
 HUNTER = [
-    {"xp_cost": 0,  "hp": 10, "at": 1,  "df": 1, "ability": None},
-    {"xp_cost": 4,  "hp": 11, "at": 2,  "df": 1, "ability": "initiative_2"},
-    {"xp_cost": 10, "hp": 13, "at": 3,  "df": 2, "ability": "double_shot"},
-    {"xp_cost": 18, "hp": 15, "at": 5,  "df": 2, "ability": "chutye"},
-    {"xp_cost": 28, "hp": 17, "at": 6,  "df": 3, "ability": "initiative_3"},
-    {"xp_cost": 44, "hp": 19, "at": 7,  "df": 3, "ability": None},
-    {"xp_cost": 84, "hp": 24, "at": 10, "df": 4, "ability": "triple_shot"},
+    {"xp_cost": 0,  "bonus": {"hp": 10, "at": 1,  "df": 1},                        "ability": []},         # уровень 1
+    {"xp_cost": 4,  "bonus": {"hp": 11, "at": 2,  "df": 1, "init": 2},             "ability": []},         # уровень 2
+    {"xp_cost": 10, "bonus": {"hp": 13, "at": 3,  "df": 2, "init": 2, "x_att": 2}, "ability": []},         # уровень 3
+    {"xp_cost": 18, "bonus": {"hp": 15, "at": 5,  "df": 2, "init": 2, "x_att": 2}, "ability": [("chut",)]},# уровень 4
+    {"xp_cost": 28, "bonus": {"hp": 17, "at": 6,  "df": 3, "init": 3, "x_att": 2}, "ability": [("chut",)]},# уровень 5
+    {"xp_cost": 44, "bonus": {"hp": 19, "at": 7,  "df": 3, "init": 3, "x_att": 2}, "ability": [("chut",)]},# уровень 6
+    {"xp_cost": 84, "bonus": {"hp": 24, "at": 10, "df": 4, "init": 3, "x_att": 2}, "ability": [("chut",)]},# уровень 7
 ]
 MAGE = [
-    {"xp_cost": 0,   "hp": 8,  "at": 2,  "df": 1, "ability": "spark_1d6_1"},
-    {"xp_cost": 6,   "hp": 9,  "at": 3,  "df": 1, "ability": "magic_vision"},
-    {"xp_cost": 14,  "hp": 11, "at": 5,  "df": 1, "ability": "spark_2d6_1"},
-    {"xp_cost": 24,  "hp": 14, "at": 7,  "df": 2, "ability": "spark_2d6_2"},
-    {"xp_cost": 36,  "hp": 16, "at": 9,  "df": 2, "ability": None},
-    {"xp_cost": 55,  "hp": 18, "at": 11, "df": 3, "ability": "spark_3d6_2"},
-    {"xp_cost": 109, "hp": 23, "at": 14, "df": 4, "ability": "spark_4d6_3"},
+    {"xp_cost": 0,   "bonus": {"hp": 8,  "at": 2,  "df": 1}, "ability": [("sprk",1,1)]},           # уровень 1
+    {"xp_cost": 6,   "bonus": {"hp": 9,  "at": 3,  "df": 1}, "ability": [("sprk",1,1), ("mg_v",)]},# уровень 2
+    {"xp_cost": 14,  "bonus": {"hp": 11, "at": 5,  "df": 1}, "ability": [("sprk",2,1), ("mg_v",)]},# уровень 3
+    {"xp_cost": 24,  "bonus": {"hp": 14, "at": 7,  "df": 2}, "ability": [("sprk",2,2), ("mg_v",)]},# уровень 4
+    {"xp_cost": 36,  "bonus": {"hp": 16, "at": 9,  "df": 2}, "ability": [("sprk",2,2), ("mg_v",)]},# уровень 5
+    {"xp_cost": 55,  "bonus": {"hp": 18, "at": 11, "df": 3}, "ability": [("sprk",3,2), ("mg_v",)]},# уровень 6
+    {"xp_cost": 109, "bonus": {"hp": 23, "at": 14, "df": 4}, "ability": [("sprk",4,3), ("mg_v",)]},# уровень 7
 ]
 PRIEST = [
-    {"xp_cost": 0,   "hp": 12, "at": 0, "df": 2, "ability": "prayer_2_1"},
-    {"xp_cost": 7,   "hp": 14, "at": 0, "df": 3, "ability": None},
-    {"xp_cost": 16,  "hp": 16, "at": 1, "df": 3, "ability": "prayer_3_1"},
-    {"xp_cost": 26,  "hp": 19, "at": 2, "df": 4, "ability": "prayer_3_2"},
-    {"xp_cost": 38,  "hp": 22, "at": 3, "df": 5, "ability": "aura_6"},
-    {"xp_cost": 57,  "hp": 25, "at": 4, "df": 6, "ability": "prayer_4_2"},
-    {"xp_cost": 114, "hp": 31, "at": 6, "df": 8, "ability": "prayer_6_3_aura_5"},
+    {"xp_cost": 0,   "bonus": {"hp": 12, "at": 0,  "df": 2}, "ability": [("heal",2,1)]},             # уровень 1
+    {"xp_cost": 7,   "bonus": {"hp": 14, "at": 0,  "df": 3}, "ability": [("heal",2,1)]},             # уровень 2
+    {"xp_cost": 16,  "bonus": {"hp": 16, "at": 1,  "df": 3}, "ability": [("heal",3,1)]},             # уровень 3
+    {"xp_cost": 26,  "bonus": {"hp": 19, "at": 2,  "df": 4}, "ability": [("heal",3,2)]},             # уровень 4
+    {"xp_cost": 38,  "bonus": {"hp": 22, "at": 3,  "df": 5}, "ability": [("heal",3,2), ("aura",6)]},# уровень 5
+    {"xp_cost": 57,  "bonus": {"hp": 25, "at": 4,  "df": 6}, "ability": [("heal",4,2), ("aura",6)]},# уровень 6
+    {"xp_cost": 114, "bonus": {"hp": 31, "at": 6,  "df": 8}, "ability": [("heal",6,3), ("aura",5)]},# уровень 7
 ]
 CLASSES = {
     "warrior": WARRIOR,
@@ -86,35 +86,35 @@ CAMP_CLASS = {5: "warrior", 6: "hunter", 7: "mage", 8: "priest"}
 MONSTERS = [
     # Пул 1: Слабые (этаж 1–2)
     [
-        {"name": "Гоблин-вор",       "at": 0, "df": 1, "hp": 5, "xp": 2, "gd": 2, "special": None},
-        {"name": "Гоблин-лучник",    "at": 1, "df": 1, "hp": 4, "xp": 2, "gd": 2, "special": "initiative_3"},
-        {"name": "Орк-новичок",      "at": 1, "df": 1, "hp": 7, "xp": 3, "gd": 3, "special": None},
-        {"name": "Гоблин-шаман",     "at": 0, "df": 2, "hp": 6, "xp": 3, "gd": 3, "special": "heal_2"},
-        {"name": "Орк-разведчик",    "at": 2, "df": 1, "hp": 6, "xp": 2, "gd": 2, "special": "flee_on_miss"},
-        {"name": "Орк-дрессировщик", "at": 1, "df": 2, "hp": 4, "xp": 1, "gd": 1, "special": "rat_companion"},
+        {"name": "Гоблин-вор",       "bonus": {"at": 0, "df": 1, "hp": 5},            "xp": 2, "gd": 2, "ability": []},
+        {"name": "Гоблин-лучник",    "bonus": {"at": 1, "df": 1, "hp": 4, "init": 3}, "xp": 2, "gd": 2, "ability": []},
+        {"name": "Орк-новичок",      "bonus": {"at": 1, "df": 1, "hp": 7},            "xp": 3, "gd": 3, "ability": []},
+        {"name": "Гоблин-шаман",     "bonus": {"at": 0, "df": 2, "hp": 6},            "xp": 3, "gd": 3, "ability": [("heal",2,1)]},
+        {"name": "Орк-разведчик",    "bonus": {"at": 2, "df": 1, "hp": 6},            "xp": 2, "gd": 2, "ability": [("flee",)]},
+        {"name": "Орк-дрессировщик", "bonus": {"at": 1, "df": 2, "hp": 4},            "xp": 1, "gd": 1, "ability": [("rat",)]},
     ],
     # Пул 2: Средние (этаж 2–3)
     [
-        {"name": "Орк-ветеран",     "at": 2, "df": 3, "hp": 11, "xp": 4, "gd": 5,  "special": None},
-        {"name": "Гоблин-берсерк",  "at": 4, "df": 1, "hp": 8,  "xp": 4, "gd": 4,  "special": "atk_2_bonus_dmg"},
-        {"name": "Орк-шаман",       "at": 1, "df": 4, "hp": 10, "xp": 5, "gd": 5,  "special": "summon_1_2"},
-        {"name": "Гоблин-ассасин",  "at": 3, "df": 2, "hp": 7,  "xp": 4, "gd": 4,  "special": "first_atk_ignore_df"},
-        {"name": "Демон-имп",       "at": 3, "df": 3, "hp": 9,  "xp": 5, "gd": 5,  "special": "immune_spark"},
-        {"name": "Каменный голем",  "at": 1, "df": 5, "hp": 12, "xp": 6, "gd": 6,  "special": "immune_first_atk"},
-        {"name": "Гоблин-король",   "at": 2, "df": 4, "hp": 10, "xp": 5, "gd": 6,  "special": "goblins_atk_1"},
+        {"name": "Орк-ветеран",     "bonus": {"at": 2, "df": 3, "hp": 11},                      "xp": 4, "gd": 5,  "ability": []},
+        {"name": "Гоблин-берсерк",  "bonus": {"at": 4, "df": 1, "hp": 8, "x_att": 2, "dmg": 1}, "xp": 4, "gd": 4, "ability": []},
+        {"name": "Орк-шаман",       "bonus": {"at": 1, "df": 4, "hp": 10},                      "xp": 5, "gd": 5,  "ability": [("smm",1,2)]},
+        {"name": "Гоблин-ассасин",  "bonus": {"at": 3, "df": 2, "hp": 7},                       "xp": 4, "gd": 4,  "ability": [("ign_df",)]},
+        {"name": "Демон-имп",       "bonus": {"at": 3, "df": 3, "hp": 9},                       "xp": 5, "gd": 5,  "ability": [("sprk_imm",)]},
+        {"name": "Каменный голем",  "bonus": {"at": 1, "df": 5, "hp": 12},                      "xp": 6, "gd": 6,  "ability": [("fatk_imm",)]},
+        {"name": "Гоблин-король",   "bonus": {"at": 2, "df": 4, "hp": 10},                      "xp": 5, "gd": 6,  "ability": [("gb_atk", 1)]},
     ],
     # Пул 3: Сильные (этаж 3–4)
     [
-        {"name": "Демон-страж",     "at": 4, "df": 5, "hp": 15, "xp": 7, "gd": 9,  "special": "immune_spark"},
-        {"name": "Орк-вожак клана", "at": 5, "df": 4, "hp": 16, "xp": 7, "gd": 10, "special": "atk_2"},
-        {"name": "Демон-палач",     "at": 6, "df": 3, "hp": 14, "xp": 8, "gd": 10, "special": "hit_bonus_2_immune_spark"},
-        {"name": "Демон-колдун",    "at": 4, "df": 6, "hp": 13, "xp": 8, "gd": 11, "special": "inferno_immune_spark"},
-        {"name": "Гоблин-титан",    "at": 5, "df": 6, "hp": 18, "xp": 9, "gd": 12, "special": None},
+        {"name": "Демон-страж",     "bonus": {"at": 4, "df": 5, "hp": 15},             "xp": 7, "gd": 9,  "ability": [("sprk_imm",)]},
+        {"name": "Орк-вожак клана", "bonus": {"at": 5, "df": 4, "hp": 16, "x_att": 2}, "xp": 7, "gd": 10, "ability": []},
+        {"name": "Демон-палач",     "bonus": {"at": 6, "df": 3, "hp": 14, "dmg": 2},   "xp": 8, "gd": 10, "ability": [("sprk_imm",)]},
+        {"name": "Демон-колдун",    "bonus": {"at": 4, "df": 6, "hp": 13},             "xp": 8, "gd": 11, "ability": [("infr",), ("sprk_imm",)]},
+        {"name": "Гоблин-титан",    "bonus": {"at": 5, "df": 6, "hp": 18},             "xp": 9, "gd": 12, "ability": []},
     ],
     # Пул 4: Элитные (этаж 4)
     [
-        {"name": "Демон-лорд", "at": 7, "df": 6, "hp": 20, "xp": 10, "gd": 15, "special": "atk_2_immune_spark"},
-        {"name": "Орк-бог",    "at": 9, "df": 8, "hp": 24, "xp": 12, "gd": 18, "special": "atk_2"},
+        {"name": "Демон-лорд", "bonus": {"at": 7, "df": 6, "hp": 20, "x_att": 2}, "xp": 10, "gd": 15, "ability": [("sprk_imm",)]},
+        {"name": "Орк-бог",    "bonus": {"at": 9, "df": 8, "hp": 24, "x_att": 2}, "xp": 12, "gd": 18, "ability": []},
     ],
 ]
 
@@ -141,8 +141,10 @@ MONSTER_POOLS_BY_FLOOR = {
 # Поле hp_per_fighter: True — hp умножается на число бойцов; False/отсутствует — нет.
 
 SPECIAL_MONSTERS = [
-    {"name": "Minotaur Guard", "at": 4, "df": 4, "hp": 15, "hp_per_fighter": True, "xp": 8,  "gd": 10, "special": "atk_1_random"},
-    {"name": "Дракон",         "at": 7, "df": 8, "hp": 25, "hp_per_fighter": True, "xp": 20, "gd": 50, "special": "atk_2_breath"},
+    {"name": "Minotaur Guard", "bonus": {"at": 4, "df": 4, "hp": 15}, "xp": 8,  "gd": 10,
+     "ability": [("atk_rnd", 1), ("hp_x_n",)]},
+    {"name": "Дракон",         "bonus": {"at": 7, "df": 8, "hp": 25, "x_att": 2}, "xp": 20, "gd": 50,
+     "ability": [("breath",), ("hp_x_n",)]},
 ]
 
 # ============================================================
@@ -151,10 +153,10 @@ SPECIAL_MONSTERS = [
 # MIMICS[floor] — floor_index 0..3 (этажи 1..4)
 
 MIMICS = [
-    {"name": "Мимик (э1)", "at": 2, "df": 2, "hp": 8,  "xp": 3,  "gd": 3,  "special": None},  # этаж 1
-    {"name": "Мимик (э2)", "at": 3, "df": 3, "hp": 12, "xp": 5,  "gd": 6,  "special": None},  # этаж 2
-    {"name": "Мимик (э3)", "at": 5, "df": 5, "hp": 18, "xp": 8,  "gd": 12, "special": None},  # этаж 3
-    {"name": "Мимик (э4)", "at": 7, "df": 7, "hp": 27, "xp": 12, "gd": 24, "special": None},  # этаж 4
+    {"name": "Мимик (э1)", "bonus": {"at": 2, "df": 2, "hp": 8},  "xp": 3,  "gd": 3,  "ability": []},
+    {"name": "Мимик (э2)", "bonus": {"at": 3, "df": 3, "hp": 12}, "xp": 5,  "gd": 6,  "ability": []},
+    {"name": "Мимик (э3)", "bonus": {"at": 5, "df": 5, "hp": 18}, "xp": 8,  "gd": 12, "ability": []},
+    {"name": "Мимик (э4)", "bonus": {"at": 7, "df": 7, "hp": 27}, "xp": 12, "gd": 24, "ability": []},
 ]
 
 # ============================================================
@@ -349,20 +351,20 @@ EQUIPMENT = [
     {"code": "US02", "name": "Кольчуга",                 "class": None,     "bonus": {"df": 2}, "price": 5},
     {"code": "US03", "name": "Мантия ученика",           "class": "mage",   "bonus": {"df": 1}, "price": 2},
     {"code": "UA01", "name": "Кольцо силы",              "class": None,     "bonus": {"hp": 2}, "price": 3},
-    {"code": "UA02", "name": "Амулет удачи",             "class": None,     "bonus": {}, "price": 0},           # пропало: +1 к сокровищам
+    {"code": "UA02", "name": "Амулет удачи",             "class": None,     "bonus": {},        "price": 0},           # пропало: +1 к сокровищам
     {"code": "UA03", "name": "Святой символ",            "class": "priest", "bonus": {"df": 1}, "price": 2},
 
     # --- редкие (R), §10.2 ---
-    {"code": "RW01", "name": "Боевой топор",             "class": None,     "bonus": {"at": 4, "df": -1}, "price": 5},
-    {"code": "RW02", "name": "Копьё",                    "class": None,     "bonus": {"at": 1}, "price": 2},     # пропало: +1 инициатива, была цена 4
-    {"code": "RW03", "name": "Меч героя",                "class": "warrior","bonus": {"at": 5}, "price": 8},
+    {"code": "RW01", "name": "Боевой топор",             "class": None,     "bonus": {"at": 4, "df": -1},           "price": 5},
+    {"code": "RW02", "name": "Копьё",                    "class": None,     "bonus": {"at": 1, "init": 1},          "price": 4},
+    {"code": "RW03", "name": "Меч героя",                "class": "warrior","bonus": {"at": 5},                     "price": 8},
     {"code": "RW04", "name": "Составной лук",            "class": "hunter", "bonus": {"at": 4}, "price": 5},     # пропало: +1 к сокровищам, была цена 7
-    {"code": "RS01", "name": "Щит",                      "class": None,     "bonus": {"df": 1, "hp": 1}, "price": 4},
-    {"code": "RS02", "name": "Тяжёлый доспех",           "class": None,     "bonus": {"df": 3}, "price": 9},     # пропало: -1 инициатива, была цена 7
-    {"code": "RS03", "name": "Башенный щит",             "class": "warrior","bonus": {"df": 2, "hp": 2}, "price": 7},
-    {"code": "RS04", "name": "Плащ следопыта",           "class": "hunter", "bonus": {"df": 1, "hp": 1}, "price": 4},  # пропало: +1 инициатива, была цена 6
-    {"code": "RS05", "name": "Святая броня",             "class": "priest", "bonus": {"df": 1, "hp": 1}, "price": 6},
-    {"code": "RA01", "name": "Сапоги скорости",          "class": None,     "bonus": {}, "price": 0},           # пропало: +1 инициатива
+    {"code": "RS01", "name": "Щит",                      "class": None,     "bonus": {"df": 1, "hp": 1},            "price": 4},
+    {"code": "RS02", "name": "Тяжёлый доспех",           "class": None,     "bonus": {"df": 3, "init": -1},         "price": 7},
+    {"code": "RS03", "name": "Башенный щит",             "class": "warrior","bonus": {"df": 2, "hp": 2},            "price": 7},
+    {"code": "RS04", "name": "Плащ следопыта",           "class": "hunter", "bonus": {"df": 1, "hp": 1, "init": 1}, "price": 6},
+    {"code": "RS05", "name": "Святая броня",             "class": "priest", "bonus": {"df": 1, "hp": 1},            "price": 6},
+    {"code": "RA01", "name": "Сапоги скорости",          "class": None,     "bonus": {"init": 1},                   "price": 4},
     {"code": "RA02", "name": "Сумка алхимика",           "class": None,     "bonus": {}, "price": 0},           # пропало: +1 к событиям
 
     # --- волшебные (V), §10.3 ---
@@ -392,14 +394,47 @@ EQUIPMENT = [
     # Качество в code[0], слот E в code[1], номер типа в code[2:]:
     # 01 — лечение, 02 — скорость. Сортировка по номеру ~ по типу эффекта.
     # В колоды снаряжения НЕ попадают (см. ELIXIR_QUALITY_BY_FLOOR и
-    # play_one_game): выдаются только торговцем. RE02 — заглушка:
-    # бонус инициативы в 5.3 не реализован, price=0.
+    # play_one_game): выдаются только торговцем.
     {"code": "UE01", "name": "Малый эликсир лечения",    "class": None, "bonus": {"hp": 3},  "price": 2},
     {"code": "RE01", "name": "Средний эликсир лечения",  "class": None, "bonus": {"hp": 6},  "price": 6},
     {"code": "VE01", "name": "Большой эликсир лечения",  "class": None, "bonus": {"hp": 10}, "price": 13},
     {"code": "LE01", "name": "Огромный эликсир лечения", "class": None, "bonus": {"hp": 20}, "price": 40},
-    {"code": "RE02", "name": "Эликсир скорости",         "class": None, "bonus": {},          "price": 0},
+    {"code": "RE02", "name": "Эликсир скорости",         "class": None, "bonus": {"init": 2},"price": 6},
 ]
+
+# ============================================================
+# СПОСОБНОСТИ (ability)
+# ============================================================
+# Способности -- то, что даёт выбор действия (атаковать / применить
+# умение / использовать навык). Бонусы (bonus) -- числовые модификаторы
+# (at/df/hp/init/x_att/dmg/...), живут в bonus у класса/монстра/предмета.
+#
+# Формат записи: "id": {"name", "params": [...], "rules": [...]}.
+# params -- имена параметров, которые ability передаёт кортежем
+# (id, *params). rules -- логика (как у событий), ПОКА ЗАГЛУШКА (6.3+).
+# id короткие: stk, std, sprk, aura, chut, mg_v, flee, heal, smm, infr,
+# ign_df, sprk_imm, fatk_imm, gb_atk, b_hit, hp_x_n, atk_rnd, breath, rat.
+
+ABILITIES = {
+    "stk":      {"name": "Стойкость",              "params": ["uses"],   "rules": []},
+    "std":      {"name": "Стойкость духа",         "params": [],         "rules": []},
+    "sprk":     {"name": "Искра",                  "params": ["dice", "uses"], "rules": []},
+    "aura":     {"name": "Святая аура",            "params": ["threshold"], "rules": []},
+    "chut":     {"name": "Чутьё",                  "params": [],         "rules": []},
+    "mg_v":     {"name": "Волшебное зрение",       "params": [],         "rules": []},
+    "flee":     {"name": "Сбегает при промахе",    "params": [],         "rules": []},
+    "heal":     {"name": "Лечение",                "params": ["amount", "uses"], "rules": []},
+    "smm":      {"name": "Призыв",                 "params": ["pool", "monster"], "rules": []},
+    "infr":     {"name": "Инферно",                "params": [],         "rules": []},
+    "ign_df":   {"name": "Игнор защиты (первая атака)", "params": [],    "rules": []},
+    "sprk_imm": {"name": "Иммунитет к Искре",      "params": [],         "rules": []},
+    "fatk_imm": {"name": "Иммунитет к первой атаке", "params": [],       "rules": []},
+    "gb_atk":   {"name": "+ к атаке гоблинам",     "params": ["value"],  "rules": []},
+    "hp_x_n":   {"name": "HP × число бойцов",      "params": [],         "rules": []},
+    "atk_rnd":  {"name": "Атака по случайному",    "params": ["count"],  "rules": []},
+    "breath":   {"name": "Пламенное дыхание",      "params": [],         "rules": []},
+    "rat":      {"name": "Гигантская крыса",       "params": [],         "rules": []},
+}
 
 # ============================================================
 # СОБЫТИЯ (20 карт)

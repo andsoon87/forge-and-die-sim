@@ -24,8 +24,9 @@
 | `data.py` | Игровые данные: классы, стартовое снаряжение (`STARTING_EQUIPMENT`), предметы (`EQUIPMENT`), 
 таблица качества (`EQUIPMENT_QUALITY_TABLE`), монстры, тайлы, действия, таблицы лагерей, 20 карт событий. 
 **Только читается** |
-| `simulator.py` | Движок: ходьба, бой, найм, события, сокровищницы, торговец, level-up, `free_phase` 
-(вкл. `solver.drink`), побег, запись лога партии |
+| `simulator.py` | Движок: ходьба, бой, найм, события, сокровищницы, торговец, level-up, `free_phase` (вкл. 
+`solver.drink`), побег, запись лога партии; `make_fighter_copy` |
+| `combat.py` | Бой: `run_combat` (раунды, инициатива, атаки, награда); работает с копиями, возвращает дельты |
 | `run_player.py` | Tkinter-обозреватель прогона: таблица партий, сводка, гистограммы, TSV |
 | `game_player.py` | Tkinter-плеер одной партии: карта этажей, таблица шагов, свойства, график |
 | `combat_player.py` | Tkinter-плеер одного боя: бойцы / раунды / противники, действия раунда |
@@ -91,6 +92,15 @@
 вернутся вместе с реализацией свойств. Цены эликсиров (2/6/13/40/6) —
 актуальны.
 
+**Бонусы и способности (6.0).** У классов, монстров и предметов — единый формат:
+`bonus` (числовые модификаторы: `hp`, `at`, `df`, `init`, …) и `ability` (список кортежей `(id, *params)` — то, 
+что даёт выбор действия). Способности описаны в `data.ABILITIES` (`{"name", "params", "rules"}`; `rules` — 
+заглушка до 6.3+). Инициатива (`init`) — бонус: `recalc_stats` = база класса + снаряжение; эликсир RE02 даёт 
+временный `init` через `floor_state["active_effects"]` (эффект «до конца ближайшего следующего боя»: `make_fighter_copy` 
+при входе в бой добавляет `init` к копии и уменьшает `turns_left`; `tick_active_effects` такие эффекты пропускает). 
+`run_combat` получает боевые копии (`make_fighter_copy`), оригиналы `party` не мутируются; возвращает `(combat_log, changes)` 
+с дельтами `hp_delta`/`xp_delta`/`gold_delta`, `play_one_game` применяет их к `party`.
+
 **`resolve_tile` предлагает, `bot_*` решают.** `resolve_tile(position, floor_state, party) -> list[Action]` — 
 только варианты. `bot_move` — направление, `bot_decide` — выбор `Action`. Не смешивать.
 
@@ -126,15 +136,14 @@ sell, от сильных к слабым, с учётом этажа и зол�
 2. `bot_move` — 1 / -1.
 3. `resolve_tile` — тянет тайл при необходимости; для лагеря делает 3 броска и пишет в `tile["camp"]`.
 4. Смена позиции, `floor_steps += 1`.
-5. Монстры собраны в `resolve_tile` (в `tile["monsters"]`); бой — через `Action.FIGHT`.
+5. Монстры собраны в `resolve_tile` (в `tile["monsters"]`); бой — через    `Action.FIGHT`. Перед боем — `make_fighter_copy` 
+   (боевые копии бойцов с учётом `active_effects`), затем `run_combat(party_copy, monsters)`.
 6. `bot_decide` (если вариантов > 1).
 7. Обработка `Action` (`HIRE` / `FIGHT` / `FLEE` / `FORGE` / `SKIP`).
 8. Запись шага в лог.
 9. Переход на этаж (`FORGE`), `MAX_FLOOR_STEPS`.
 
-**`run_combat(party, monsters)`** — без `kind`. Противники — список боевых экземпляров с полем `source` (`{"type": "monster", ...}` 
-/ `{"type": "camp", ...}`), по нему плееры различают тип. Награда — `sum(m["xp"])`, `sum(m["gd"])`, делёж между выжившими. 
-Чистка трупов — не здесь, а в `free_phase`.
+**`run_combat(party, monsters)`** (в `combat.py`) — без `kind`. `party` — **боевые копии** (`make_fighter_copy`), `monsters` — боевые экземпляры с полем `source` (`{"type": "monster", ...}` / `{"type": "camp", ...}`), по нему плееры различают тип. Возвращает `(combat_log, changes)`: `changes` — дельты `hp_delta`/`xp_delta`/`gold_delta` по порядку `party` (оригиналы не трогаются). Награда — `sum(m["xp"])`, `sum(m["gd"])`, делёж между выжившими. Чистка трупов — не здесь, а в `free_phase`.
 
 **Плееры** запускаются через `subprocess.Popen([sys.executable, <script>, ...])`, пути — через `os.path.dirname(os.path.abspath(__file__))`. Настройки — в `~/.config/forge-and-die-sim/<player>.json` (без дефолтов: нет файла — всё выключено).
 
